@@ -619,6 +619,68 @@ def raise_if_email_domain_rejected(email=""):
         raise _deps['EmailDomainRejected'](email=email, message=message)
 
 
+def _has_code_verification_input() -> bool:
+    """检测当前页面是否已经进入邮箱验证码阶段。
+
+    accounts.x.ai 偶尔会在邮箱提交确认窗口结束后才完成页面切换。此时调用方的
+    下一轮不能继续把验证码页当作“邮箱输入框尚未出现”。
+    """
+    try:
+        if _native_input_candidates("code"):
+            return True
+        # 兼容每位验证码各占一个 input 的 OTP 控件。
+        if len(_native_input_candidates("code_box")) >= 4:
+            return True
+    except Exception:
+        pass
+
+    try:
+        return bool(
+            page.run_js(
+                r"""
+function isVisible(node) {
+    if (!node) return false;
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+function metaOf(node) {
+    return [
+        node.getAttribute('aria-label'),
+        node.getAttribute('placeholder'),
+        node.getAttribute('name'),
+        node.getAttribute('id'),
+        node.getAttribute('autocomplete'),
+        node.getAttribute('data-testid'),
+    ].filter(Boolean).join(' ').toLowerCase();
+}
+const inputs = Array.from(document.querySelectorAll('input')).filter((node) => {
+    if (!isVisible(node) || node.disabled || node.readOnly) return false;
+    const type = (node.getAttribute('type') || '').toLowerCase();
+    return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file'].includes(type);
+});
+const aggregate = inputs.find((node) => {
+    const meta = metaOf(node);
+    const inputMode = (node.getAttribute('inputmode') || '').toLowerCase();
+    return (
+        node.getAttribute('data-input-otp') === 'true' ||
+        meta.includes('code') || meta.includes('otp') || meta.includes('verif') ||
+        meta.includes('one-time') || meta.includes('验证') ||
+        node.getAttribute('autocomplete') === 'one-time-code' ||
+        inputMode === 'numeric'
+    );
+});
+if (aggregate) return true;
+const boxes = inputs.filter((node) => Number(node.getAttribute('maxlength') || 0) === 1);
+return boxes.length >= 4;
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
 def _email_page_advanced_once(email):
     """检测邮箱提交后页面是否真正前进（离开邮箱输入阶段）。
 
@@ -736,8 +798,15 @@ def fill_email_and_submit(timeout=45, log_callback=None, cancel_callback=None):
     last_diag_time = 0
     last_reclick_time = 0
     last_snapshot = None
+    last_submit_clicked_at = None
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        # 邮箱提交后的跳转有时超过 _wait_email_page_advanced 的短确认窗口。
+        # 一旦本轮确实点过提交，后续看到验证码框就直接交给验证码步骤处理。
+        if last_submit_clicked_at is not None and _has_code_verification_input():
+            if log_callback:
+                log_callback(f"[*] 邮箱提交后已延迟进入验证码页: {email}")
+            return email, dev_token, last_submit_clicked_at
         native_filled = _native_fill_email(email)
         if native_filled:
             filled = {"state": "filled", "source": "native", "url": page.url if page else ""}
@@ -844,6 +913,10 @@ return {
             last_snapshot = filled
         if state == "not-ready":
             now = time.time()
+            if last_submit_clicked_at is not None and _has_code_verification_input():
+                if log_callback:
+                    log_callback(f"[*] 邮箱提交后已延迟进入验证码页: {email}")
+                return email, dev_token, last_submit_clicked_at
             if now - last_reclick_time >= 3:
                 reclicked = page.run_js(r"""
 function isVisible(node) {
@@ -1016,6 +1089,7 @@ return 'enter';
                 """
             )
         if clicked:
+            last_submit_clicked_at = submit_clicked_at
             # 点击按钮 != 表单真正提交成功：CF 挑战未过或页面卡住时点击无效果，
             # 邮件不会发出。必须确认页面已离开邮箱输入阶段（邮箱框消失或出现验证码框），
             # 否则继续循环重试点击，最终超时抛异常触发换邮箱重试。
@@ -1029,6 +1103,10 @@ return 'enter';
                 log_callback(f"[Debug] 已点击注册但页面未前进，重试提交: {email}")
             raise_if_email_domain_rejected(email)
         sleep_with_cancel(0.5, cancel_callback)
+    if last_submit_clicked_at is not None and _has_code_verification_input():
+        if log_callback:
+            log_callback(f"[*] 邮箱提交后已延迟进入验证码页: {email}")
+        return email, dev_token, last_submit_clicked_at
     raise_if_email_domain_rejected(email)
     if last_snapshot:
         inputs = " | ".join(last_snapshot.get("inputs", [])[:6])
