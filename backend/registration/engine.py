@@ -185,6 +185,7 @@ DEFAULT_CONFIG = {
     "enable_nsfw": True,
     "debug_mode": False,
     "browser_headless": False,
+    "browser_locale": "en-US",
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
@@ -2044,6 +2045,11 @@ def is_browser_headless():
     return bool(config.get("browser_headless", False))
 
 
+def get_browser_locale() -> str:
+    value = str(config.get("browser_locale", "en-US") or "en-US").strip()
+    return value if value in {"en-US", "zh-CN"} else "en-US"
+
+
 def should_close_browser_after_run(user_stopped: bool) -> bool:
     """正常结束时非调试模式关闭；手动停止时严格以勾选项为准。"""
     if user_stopped:
@@ -2087,6 +2093,7 @@ def _wire_runtime_modules():
         get_proxies=get_proxies,
         is_debug=is_debug_mode,
         is_headless=is_browser_headless,
+        get_locale=get_browser_locale,
         extension_path=EXTENSION_PATH,
     )
     _rf.configure(

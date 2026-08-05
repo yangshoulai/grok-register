@@ -91,6 +91,7 @@ _tls = threading.local()
 _get_proxy: Optional[Callable[[], dict]] = None
 _is_debug: Optional[Callable[[], bool]] = None
 _is_headless: Optional[Callable[[], bool]] = None
+_get_locale: Optional[Callable[[], str]] = None
 _extension_path: str = ""
 _start_fail_lock = threading.Lock()
 _start_fail_streak = 0
@@ -98,11 +99,12 @@ _start_fail_threshold = 3
 _browser_launch_blocked = threading.Event()
 
 
-def configure(get_proxies=None, is_debug=None, is_headless=None, extension_path=""):
-    global _get_proxy, _is_debug, _is_headless, _extension_path
+def configure(get_proxies=None, is_debug=None, is_headless=None, get_locale=None, extension_path=""):
+    global _get_proxy, _is_debug, _is_headless, _get_locale, _extension_path
     _get_proxy = get_proxies
     _is_debug = is_debug
     _is_headless = is_headless
+    _get_locale = get_locale
     _extension_path = extension_path or ""
 
 
@@ -128,6 +130,11 @@ def _proxies() -> dict:
     if _get_proxy:
         return _get_proxy() or {}
     return {}
+
+
+def _browser_locale() -> str:
+    value = str(_get_locale() if _get_locale else "en-US").strip()
+    return value if value in {"en-US", "zh-CN"} else "en-US"
 
 
 def _debug() -> bool:
@@ -486,7 +493,8 @@ def create_browser_options(unique_profile=True) -> dict:
     浏览器策略：
     - headless：由 Web 设置控制，默认使用有头模式
     - humanize=True：人类化鼠标移动 + 点击轨迹
-    - geoip=True：基于代理 IP 匹配时区 / 语言 / 经纬度
+    - geoip=True：基于代理 IP 匹配时区 / 经纬度
+    - locale：固定为英文或简体中文，避免代理出口改变页面语言
     - block_webrtc=True：WebRTC IP 泄漏防护（避免真实 IP 通过 STUN 暴露）
     - 指纹由 BrowserForge 自动生成（匹配 Firefox/Camoufox 引擎）
     """
@@ -494,7 +502,8 @@ def create_browser_options(unique_profile=True) -> dict:
     opts: dict = {
         "headless": headless,
         "humanize": True,       # 人类化鼠标移动 + 贝塞尔轨迹
-        "geoip": True,          # 基于 IP 匹配时区 / 语言 / 经纬度
+        "geoip": True,          # 基于 IP 匹配时区 / 经纬度；语言由 locale 单独固定
+        "locale": _browser_locale(),  # 覆盖 GeoIP 语言，保持页面元素文本稳定
         "block_webrtc": True,   # 防止 WebRTC 泄漏真实 IP（即使使用代理）
         "i_know_what_im_doing": True,  # 抑制 Firefox 版本伪装警告（Camoufox 引擎层伪装是预期行为）
     }
@@ -585,6 +594,7 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
 
             if log_callback:
                 log_callback(f"[*] 浏览器模式: {'无头' if opts['headless'] else '有头'}")
+                log_callback(f"[*] 浏览器语言: {opts['locale']}")
             if log_callback and profile_dir:
                 log_callback(f"[Debug] 当前浏览器资料目录: {profile_dir}")
             if log_callback and attempt > 1:

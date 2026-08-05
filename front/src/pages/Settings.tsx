@@ -343,7 +343,20 @@ export function SettingsPage() {
             <ConfigField {...fieldState} label="注册数量" field="register_count" type="number" />
             <ConfigField {...fieldState} label="并发浏览器数" field="register_workers" type="number" />
             <ConfigField {...fieldState} label="日志级别" field="log_level" placeholder="info（普通）/ debug（详细）" />
-            <div className="hidden sm:block" />
+            <div className="min-w-0 space-y-2">
+              <Label htmlFor="browser_locale">浏览器界面语言</Label>
+              <Select
+                id="browser_locale"
+                value={config.browser_locale || "en-US"}
+                onChange={(event) => setField("browser_locale", event.target.value)}
+              >
+                <option value="en-US">English (en-US，推荐)</option>
+                <option value="zh-CN">简体中文 (zh-CN)</option>
+              </Select>
+              <p className="text-xs leading-5 text-muted-foreground">
+                固定注册页面语言，不跟随代理出口自动切换。
+              </p>
+            </div>
             <div className="space-y-3 sm:col-span-2">
               <ToggleRow
                 title="注册后开启 NSFW"

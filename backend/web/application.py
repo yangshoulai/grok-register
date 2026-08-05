@@ -69,6 +69,7 @@ CONFIG_PUBLIC_KEYS = (
     "enable_nsfw",
     "debug_mode",
     "browser_headless",
+    "browser_locale",
     "close_browser_on_stop",
     "log_level",
     "register_count",
@@ -316,6 +317,10 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
                 value = max(1, min(value, 50))
         elif key == "log_level":
             value = str(value or "info").strip().lower() or "info"
+        elif key == "browser_locale":
+            value = str(value or "en-US").strip()
+            if value not in {"en-US", "zh-CN"}:
+                value = "en-US"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:
