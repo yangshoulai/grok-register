@@ -251,6 +251,7 @@ class RegistrationRiskDenied(Exception):
 
 
 FAIL_DOMAIN = "domain_rejected"
+FAIL_ALREADY_REGISTERED = "already_registered"
 FAIL_RISK = "registration_risk"
 FAIL_CODE = "code_timeout"
 FAIL_BROWSER = "browser"
@@ -261,6 +262,7 @@ FAIL_OTHER = "other"
 
 FAIL_LABELS = {
     FAIL_DOMAIN: "域名拒绝",
+    FAIL_ALREADY_REGISTERED: "账号已注册",
     FAIL_RISK: "注册风控",
     FAIL_CODE: "验证码超时",
     FAIL_BROWSER: "浏览器断开",
@@ -274,6 +276,8 @@ FAIL_LABELS = {
 def classify_failure(exc) -> str:
     if isinstance(exc, EmailDomainRejected):
         return FAIL_DOMAIN
+    if isinstance(exc, _rf.AccountAlreadyRegistered):
+        return FAIL_ALREADY_REGISTERED
     if isinstance(exc, RegistrationRiskDenied):
         return FAIL_RISK
     msg = str(exc or "")

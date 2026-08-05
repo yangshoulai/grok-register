@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 
+from backend.registration import engine
 from backend.registration import signup_flow
 
 
@@ -26,6 +27,79 @@ class SignupFlowTests(unittest.TestCase):
     def test_native_input_accepts_confirmed_value(self):
         element = self.NativeInput(current_value="Neo")
         self.assertTrue(signup_flow._native_type_element(element, "Neo"))
+
+    def test_detects_account_already_registered_notice(self):
+        page = mock.Mock()
+        page.run_js.return_value = {
+            "notices": [
+                "Existing account found An account already exists which is associated with this email address. Please login using the login method shown below. Login with email"
+            ],
+            "body": "Complete your sign up",
+            "url": "https://accounts.x.ai/sign-up",
+        }
+        with mock.patch.object(signup_flow, "page", page):
+            notice = signup_flow.detect_account_already_registered()
+        self.assertTrue(notice.startswith("Existing account found"))
+
+    def test_detects_account_already_registered_by_dom_signature(self):
+        page = mock.Mock()
+        page.run_js.return_value = {
+            "signature": {
+                "matched": True,
+                "name": "existing-account-email-login-card",
+                "text": "找到现有账户 已存在与此邮箱地址关联的账户。 使用邮箱登录",
+            },
+            "notices": [],
+            "body": "",
+            "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+        }
+        with mock.patch.object(signup_flow, "page", page):
+            notice = signup_flow.detect_account_already_registered()
+        self.assertEqual(notice, "找到现有账户 已存在与此邮箱地址关联的账户。 使用邮箱登录")
+
+    def test_detects_chinese_account_wording_as_text_fallback(self):
+        page = mock.Mock()
+        page.run_js.return_value = {
+            "signature": {"matched": False},
+            "notices": ["找到现有账户 已存在与此邮箱地址关联的账户。"],
+            "body": "",
+            "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+        }
+        with mock.patch.object(signup_flow, "page", page):
+            notice = signup_flow.detect_account_already_registered()
+        self.assertTrue(notice.startswith("找到现有账户"))
+
+    def test_known_text_takes_priority_over_dom_signature(self):
+        page = mock.Mock()
+        page.run_js.return_value = {
+            "signature": {
+                "matched": True,
+                "name": "existing-account-email-login-card",
+                "text": "DOM fallback result",
+            },
+            "notices": [
+                "Existing account found An account already exists which is associated with this email address."
+            ],
+            "body": "",
+            "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+        }
+        with mock.patch.object(signup_flow, "page", page):
+            notice = signup_flow.detect_account_already_registered()
+        self.assertTrue(notice.startswith("Existing account found"))
+
+    def test_ignores_generic_existing_account_signin_link(self):
+        page = mock.Mock()
+        page.run_js.return_value = {
+            "notices": [],
+            "body": "Already have an account? Sign in",
+            "url": "https://accounts.x.ai/sign-up",
+        }
+        with mock.patch.object(signup_flow, "page", page):
+            self.assertEqual(signup_flow.detect_account_already_registered(), "")
+
+    def test_duplicate_account_has_own_failure_type(self):
+        exc = signup_flow.AccountAlreadyRegistered("fixture")
+        self.assertEqual(engine.classify_failure(exc), engine.FAIL_ALREADY_REGISTERED)
 
     def test_code_submission_accepts_native_button_label(self):
         logs = []

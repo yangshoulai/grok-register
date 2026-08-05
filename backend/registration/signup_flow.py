@@ -30,6 +30,25 @@ from backend.automation.session import (
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
+
+class AccountAlreadyRegistered(Exception):
+    """资料提交后站点明确提示邮箱或账号已经存在。"""
+
+
+_ALREADY_REGISTERED_PATTERNS = (
+    re.compile(r"existing account found", re.I),
+    re.compile(r"email.{0,80}already.{0,40}(?:registered|exists|in use|used|taken)", re.I),
+    re.compile(r"account.{0,80}already.{0,40}(?:registered|exists)", re.I),
+    re.compile(r"already.{0,40}registered.{0,80}email", re.I),
+    re.compile(r"user.{0,60}already.{0,40}exists", re.I),
+    re.compile(r"email.{0,40}(?:is|address is).{0,20}(?:unavailable|not available)", re.I),
+    re.compile(r"邮箱.{0,40}(?:已|已经).{0,40}(?:注册|存在|使用|占用)"),
+    re.compile(r"账号.{0,40}(?:已|已经).{0,40}(?:注册|存在)"),
+    re.compile(r"找到现有(?:账号|账户)"),
+    re.compile(r"(?:账号|账户).{0,20}(?:已|已经).{0,40}(?:注册|存在)"),
+    re.compile(r"已存在与此邮箱地址关联的(?:账号|账户)"),
+)
+
 # 资料页 Cloudflare Turnstile：等待自动通过 + 智能点击，不调用 reset()
 CF_FIRST_RETRY_AFTER = 3.0   # 检测到 CF 后 3 秒即开始尝试（原 8 秒太慢）
 CF_RETRY_INTERVAL = 15.0     # 两次完整 getTurnstileToken 之间的间隔（避免频繁进入阻塞流程）
@@ -1759,6 +1778,110 @@ btn.focus(); btn.click(); return 'submitted';
     raise Exception("最终注册页资料填写失败")
 
 
+def detect_account_already_registered():
+    """识别资料提交后的账号重复结果页。
+
+    浏览器语言固定为中英文，因此优先匹配已经真实确认的中英文提示；页面
+    结构（标题说明块、唯一邮件登录按钮、零输入框）仅用于文案变化时兜底。
+    """
+    try:
+        payload = page.run_js(
+            r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  const rect = node.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0'
+    && rect.width > 0 && rect.height > 0;
+}
+const selectors = [
+  '[role="alert"]', '[aria-live="assertive"]', '[aria-live="polite"]',
+  '[data-testid*="error" i]', '[data-testid*="alert" i]',
+  '[class*="error" i]', '[class*="alert" i]', '[class*="danger" i]'
+];
+const notices = [];
+for (const selector of selectors) {
+  for (const node of document.querySelectorAll(selector)) {
+    if (!isVisible(node)) continue;
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text && text.length <= 800) notices.push(text);
+  }
+}
+// 已注册结果页没有 data-testid；稳定结构是：标题说明块 + 唯一邮件登录按钮，
+// 且卡片内没有任何可见输入框。邮件图标 class 不随页面语言变化。
+let signature = { matched: false, name: '', text: '' };
+if (/\/sign-up(?:[/?#]|$)/i.test(location.pathname + location.search)) {
+  const headings = Array.from(document.querySelectorAll('h1')).filter(isVisible);
+  for (const heading of headings) {
+    const headingBlock = heading.parentElement;
+    const card = headingBlock && headingBlock.parentElement;
+    if (!headingBlock || !card) continue;
+    const description = Array.from(headingBlock.children).find((node) => node.tagName === 'P' && isVisible(node));
+    const mailButtons = Array.from(card.querySelectorAll('button[type="button"]')).filter((button) => {
+      return isVisible(button) && Boolean(button.querySelector('svg.lucide-mail'));
+    });
+    const visibleButtons = Array.from(card.querySelectorAll('button')).filter(isVisible);
+    const visibleInputs = Array.from(card.querySelectorAll('input, textarea, select')).filter(isVisible);
+    if (description && mailButtons.length === 1 && visibleButtons.length === 1 && visibleInputs.length === 0) {
+      const text = String(card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+      signature = {
+        matched: true,
+        name: 'existing-account-email-login-card',
+        text: text.slice(0, 800)
+      };
+      if (text) notices.unshift(text);
+      break;
+    }
+  }
+}
+const duplicateHeading = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]')).find((node) => {
+  if (!isVisible(node)) return false;
+  const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return text.includes('existing account found') || text.includes('账号已存在') || text.includes('账号已注册')
+    || text.includes('找到现有账号') || text.includes('找到现有账户')
+    || text.includes('账户已存在') || text.includes('账户已注册');
+});
+if (duplicateHeading) {
+  let container = duplicateHeading.parentElement;
+  let resultText = String(duplicateHeading.innerText || duplicateHeading.textContent || '').trim();
+  for (let depth = 0; container && depth < 4; depth += 1, container = container.parentElement) {
+    const text = String(container.innerText || container.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length >= resultText.length && text.length <= 800) resultText = text;
+    if (/login with email|使用邮箱登录/i.test(text) && text.length <= 800) break;
+  }
+  if (resultText) notices.unshift(resultText);
+}
+const body = String(document.body && (document.body.innerText || document.body.textContent) || '')
+  .replace(/\s+/g, ' ').trim().slice(0, 2400);
+return { notices: Array.from(new Set(notices)).slice(0, 20), body, url: location.href, signature };
+            """
+        )
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    notices = payload.get("notices") if isinstance(payload.get("notices"), list) else []
+    candidates = [str(item or "").strip() for item in notices if str(item or "").strip()]
+    body = str(payload.get("body") or "").strip()
+    if body:
+        candidates.append(body)
+    for text in candidates:
+        for pattern in _ALREADY_REGISTERED_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                if len(text) <= 500:
+                    return text[:500]
+                start = max(match.start() - 120, 0)
+                end = min(match.end() + 180, len(text))
+                return text[start:end]
+    signature = payload.get("signature") if isinstance(payload.get("signature"), dict) else {}
+    if signature.get("matched"):
+        signature_text = str(signature.get("text") or "").strip()
+        signature_name = str(signature.get("name") or "existing-account-card").strip()
+        return (signature_text or f"DOM:{signature_name}")[:500]
+    return ""
+
+
 def wait_for_sso_cookie(timeout=55, log_callback=None, cancel_callback=None):
     """等注册完成后的 sso cookie。
 
@@ -1924,6 +2047,12 @@ return true;
             cur_url = _current_url()
             on_accounts = ("accounts.x.ai" in cur_url) or ("auth.x.ai" in cur_url)
             on_grok = "grok.com" in cur_url
+
+            registered_notice = detect_account_already_registered()
+            if registered_notice:
+                if log_callback:
+                    log_callback(f"[-] 注册失败，账号已注册: {registered_notice}")
+                raise AccountAlreadyRegistered(f"账号已注册: {registered_notice}")
 
             # 心跳：避免长时间无日志像卡死
             if log_callback and now - last_heartbeat >= 5:
@@ -2101,7 +2230,7 @@ return 'final-page-clicked-submit';
             refresh_active_page()
         except Exception as exc:
             name = type(exc).__name__
-            if name in ("AccountRetryNeeded", "RegistrationCancelled"):
+            if name in ("AccountRetryNeeded", "RegistrationCancelled", "AccountAlreadyRegistered"):
                 raise
             if log_callback:
                 log_callback(f"[Debug] 等待 sso 时异常: {exc}")
