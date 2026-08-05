@@ -81,7 +81,7 @@ CONFIG_PUBLIC_KEYS = (
     "cpa_management_key",
     "cpa_account_proxy",
     "grok2api_auth_dir",
-
+)
 SENSITIVE_HINT_KEYS = {
     "duckmail_api_key",
     "cloudmail_password",
