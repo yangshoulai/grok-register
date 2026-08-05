@@ -416,6 +416,7 @@ export function SettingsPage() {
                 <ConfigField {...fieldState} label="本地授权目录" field="cpa_auth_dir" />
                 <ConfigField {...fieldState} label="远程 CPA 地址" field="cpa_remote_url" placeholder="http://host:8317" />
                 <ConfigField {...fieldState} label="远程管理密钥" field="cpa_management_key" type="password" />
+                <ConfigField {...fieldState} label="账号代理" field="cpa_account_proxy" placeholder="http://proxy.example.com/<ACCOUNT>" helper="账号代理模板；含&lt;ACCOUNT&gt;时使用 email MD5 替换作为 proxy_url。" />
               </CardContent>
             </Card>
 

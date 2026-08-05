@@ -199,6 +199,7 @@ DEFAULT_CONFIG = {
     # 远程 CPA：通过 Management API POST /v0/management/auth-files 上传
     "cpa_remote_url": "",
     "cpa_management_key": "",
+    "cpa_account_proxy": "",
     # Grok2API grok_build 导入目录
     "grok2api_auth_dir": "data/grok2api_auth",
     # 远程 Grok2API 管理端：登录后通过 SSE 导入 grok_build JSON
@@ -1023,7 +1024,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             _cpa_log("换 token 失败；SSO 已在 accounts 文件，稍后可重转")
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
-        record = _s2cpa.token_to_cpa_record(token, email=email, sso=sso)
+        record = _s2cpa.token_to_cpa_record(token, email=email, sso=sso, account_proxy=config.get("cpa_account_proxy", ""))
         ap = _s2cpa.decode_jwt_payload(record.get("access_token", ""))
         ref = ap.get("referrer")
         if ref:

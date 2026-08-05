@@ -38,6 +38,7 @@
   "cpa_auth_dir": "data/cpa_auth",
   "cpa_remote_url": "",
   "cpa_management_key": "",
+  "cpa_account_proxy": "",
   "grok2api_auth_dir": "data/grok2api_auth",
   "grok2api_remote_url": "",
   "grok2api_remote_username": "",

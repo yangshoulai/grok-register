@@ -79,18 +79,8 @@ CONFIG_PUBLIC_KEYS = (
     "cpa_auth_dir",
     "cpa_remote_url",
     "cpa_management_key",
+    "cpa_account_proxy",
     "grok2api_auth_dir",
-    "grok2api_remote_url",
-    "grok2api_remote_username",
-    "grok2api_remote_password",
-    "grok2api_auto_import",
-    "mailnest_api_key",
-    "mailnest_project_code",
-    "yyds_api_key",
-    "yyds_jwt",
-    "yyds_default_domain",
-    "account_interval",
-)
 
 SENSITIVE_HINT_KEYS = {
     "duckmail_api_key",

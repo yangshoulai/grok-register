@@ -1151,11 +1151,36 @@ def _safe_email_for_filename(email: str) -> str:
     return safe or "unknown"
 
 
-def token_to_cpa_record(token: dict, email: str = "", sso: str = "") -> dict:
+def resolve_cpa_account_proxy_url(template: str, email: str = "") -> str:
+    """根据「账号代理」配置解析 CPA JSON 的 proxy_url。
+
+    - 配置为空：返回空字符串（调用方不写入 proxy_url 字段）
+    - 配置不含 ``<ACCOUNT>``：直接使用配置值
+    - 配置含 ``<ACCOUNT>``：用 MD5(email) 替换后返回
+    """
+    value = str(template or "").strip()
+    if not value:
+        return ""
+    if "<ACCOUNT>" not in value:
+        return value
+    email_val = str(email or "").strip()
+    digest = hashlib.md5(email_val.encode("utf-8")).hexdigest()
+    return value.replace("<ACCOUNT>", digest)
+
+
+def token_to_cpa_record(
+    token: dict,
+    email: str = "",
+    sso: str = "",
+    account_proxy: str = "",
+) -> dict:
     """token dict → CLIProxyAPI 扁平 xai auth 记录。
 
     对齐 CPA internal/auth/xai/token.go 的 TokenStorage 字段，以及
     grok-build-auth build_cliproxyapi_auth_record 的输出。
+
+    account_proxy 来自配置「账号代理」(cpa_account_proxy)：
+    非空时写入 proxy_url；含 ``<ACCOUNT>`` 时用 MD5(email) 替换。
     """
     access = token.get("access_token") or token.get("key") or ""
     refresh = token.get("refresh_token") or ""
@@ -1198,6 +1223,10 @@ def token_to_cpa_record(token: dict, email: str = "", sso: str = "") -> dict:
     sso_val = str(sso or "").strip()
     if sso_val:
         record["sso"] = sso_val
+    # 账号代理 → CPA JSON 的 proxy_url（空配置则不写该字段，保持兼容）
+    proxy_url = resolve_cpa_account_proxy_url(account_proxy, email=record.get("email", ""))
+    if proxy_url:
+        record["proxy_url"] = proxy_url
     return record
 
 
