@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Clock3,
   Copy,
+  Database,
   Download,
   Eye,
   Loader2,
@@ -17,6 +18,7 @@ import {
   Power,
   RefreshCw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import { AccountBatchActions } from "@/components/AccountBatchActions";
@@ -457,6 +459,8 @@ export function AccountsPage() {
   const [reloginFailure, setReloginFailure] = useState<{ email: string; error: string } | null>(null);
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState<"" | "export-cpa" | "export-grok2api" | "relogin">("");
+  const [deleteDialog, setDeleteDialog] = useState<{ ids: number[]; email: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState<"" | "files" | "database">("");
   const [grok2apiImportingId, setGrok2apiImportingId] = useState<number | null>(null);
   const [moreMenu, setMoreMenu] = useState<{
     item: AccountRecord;
@@ -580,6 +584,15 @@ export function AccountsPage() {
   }, [detail]);
 
   useEffect(() => {
+    if (!deleteDialog) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleteBusy) setDeleteDialog(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteDialog, deleteBusy]);
+
+  useEffect(() => {
     if (!moreMenu) return;
     const close = () => setMoreMenu(null);
     window.addEventListener("resize", close);
@@ -682,21 +695,47 @@ export function AccountsPage() {
     }
   };
 
-  const onDelete = async () => {
-    if (!selectedIds.length) {
+  const openDeleteDialog = (ids = selectedIds) => {
+    if (!ids.length) {
       showToast("请先选择记录", "error");
       return;
     }
-    if (!window.confirm(`删除 ${selectedIds.length} 条记录及其关联文件？此操作不可恢复。`)) return;
+    const onlyItem = ids.length === 1 ? items.find((item) => item.id === ids[0]) : null;
+    setBatchMenuOpen(false);
+    setMoreMenu(null);
+    setDeleteDialog({ ids: [...ids], email: onlyItem?.email || "" });
+  };
+
+  const executeDelete = async (deleteFiles: boolean) => {
+    if (!deleteDialog?.ids.length) return;
+    setDeleteBusy(deleteFiles ? "files" : "database");
+    const ids = [...deleteDialog.ids];
+    const deletedIdSet = new Set(ids);
     try {
-      const result = await api.deleteAccounts(selectedIds, true);
-      showToast(`已删除 ${result.deleted} 条，文件 ${result.deleted_files} 个`, "success");
-      setSelected({});
+      const result = await api.deleteAccounts(ids, deleteFiles);
+      const fileErrorSuffix = result.file_errors.length
+        ? `，${result.file_errors.length} 个文件处理失败`
+        : "";
+      showToast(
+        deleteFiles
+          ? `已删除 ${result.deleted} 条记录和 ${result.deleted_files} 个真实文件${fileErrorSuffix}`
+          : `已删除 ${result.deleted} 条数据库记录，真实文件已保留`,
+        result.file_errors.length ? "error" : "success"
+      );
+      setSelected((previous) => {
+        const next = { ...previous };
+        for (const id of ids) delete next[id];
+        return next;
+      });
       setBatchMenuOpen(false);
-      setDetail(null);
+      setMoreMenu(null);
+      setDetail((current) => current && deletedIdSet.has(current.id) ? null : current);
+      setDeleteDialog(null);
       await load(page, pageSize);
     } catch (err: any) {
       showToast(err.message || "删除失败", "error");
+    } finally {
+      setDeleteBusy("");
     }
   };
 
@@ -865,7 +904,7 @@ export function AccountsPage() {
               onRelogin={() => void onBatchRelogin()}
               onDelete={() => {
                 setBatchMenuOpen(false);
-                void onDelete();
+                openDeleteDialog(selectedIds);
               }}
             />
           </>
@@ -1285,6 +1324,95 @@ export function AccountsPage() {
                 reloginRunning={!!relogin?.running && relogin.account_id === detail.id}
               />
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {deleteDialog ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-end bg-slate-950/55 sm:items-center sm:justify-center sm:p-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !deleteBusy) setDeleteDialog(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-account-title"
+            className="w-full overflow-hidden rounded-t-3xl bg-card shadow-2xl sm:max-w-lg sm:rounded-3xl"
+          >
+            <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-slate-300 sm:hidden" />
+            <header className="flex items-start justify-between gap-3 border-b px-4 py-4 sm:px-5">
+              <div className="min-w-0">
+                <h2 id="delete-account-title" className="font-semibold text-foreground">
+                  删除{deleteDialog.ids.length === 1 ? "账号" : `选中的 ${deleteDialog.ids.length} 个账号`}
+                </h2>
+                <p className="mt-1 break-all text-xs leading-5 text-muted-foreground">
+                  {deleteDialog.email || "请选择是否同时清理这些账号关联的真实文件。"}
+                </p>
+              </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="shrink-0"
+                onClick={() => setDeleteDialog(null)}
+                disabled={!!deleteBusy}
+                aria-label="关闭删除确认"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </Button>
+            </header>
+
+            <div className="space-y-3 px-4 py-4 sm:px-5">
+              <button
+                type="button"
+                className="flex min-h-20 w-full items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-left transition hover:border-red-300 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => void executeDelete(true)}
+                disabled={!!deleteBusy}
+              >
+                {deleteBusy === "files" ? (
+                  <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-red-700" aria-hidden="true" />
+                ) : (
+                  <Trash2 className="mt-0.5 h-5 w-5 shrink-0 text-red-700" aria-hidden="true" />
+                )}
+                <span className="min-w-0">
+                  <span className="block font-semibold text-red-900">删除数据库记录和真实文件</span>
+                  <span className="mt-1 block text-xs leading-5 text-red-700">
+                    同时清理账号文件、授权 JSON、失败截图及相关汇总记录。
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className="flex min-h-20 w-full items-start gap-3 rounded-2xl border bg-card p-4 text-left transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => void executeDelete(false)}
+                disabled={!!deleteBusy}
+              >
+                {deleteBusy === "database" ? (
+                  <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+                ) : (
+                  <Database className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+                )}
+                <span className="min-w-0">
+                  <span className="block font-semibold text-foreground">仅删除数据库记录</span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                    保留 data 目录中的账号文件、授权 JSON 和失败截图。
+                  </span>
+                </span>
+              </button>
+            </div>
+
+            <footer className="border-t px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-4">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => setDeleteDialog(null)}
+                disabled={!!deleteBusy}
+              >
+                取消
+              </Button>
+            </footer>
           </section>
         </div>
       ) : null}
