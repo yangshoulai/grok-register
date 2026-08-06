@@ -53,6 +53,8 @@ _ALREADY_REGISTERED_PATTERNS = (
 CF_FIRST_RETRY_AFTER = 3.0   # 检测到 CF 后 3 秒即开始尝试（原 8 秒太慢）
 CF_RETRY_INTERVAL = 15.0     # 两次完整 getTurnstileToken 之间的间隔（避免频繁进入阻塞流程）
 CF_WAIT_LOG_INTERVAL = 5.0
+PROFILE_SUBMIT_CONFIRM_TIMEOUT = 12.0
+SSO_WAIT_DEFAULT_TIMEOUT = 90
 
 _deps: Dict[str, Any] = {}
 _runtime = threading.local()
