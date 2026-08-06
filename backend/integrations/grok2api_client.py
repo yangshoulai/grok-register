@@ -259,6 +259,9 @@ class Grok2APIClient:
     def __enter__(self) -> "Grok2APIClient":
         return self
 
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
+
     def upload_web_sso(self, sso: str) -> Dict[str, Any]:
         """上传 Grok Web SSO 文件（grok-web-sso-tokens.txt）到远程管理端。
 
@@ -277,9 +280,11 @@ class Grok2APIClient:
             headers={
                 "Accept": "text/event-stream",
                 "Authorization": f"Bearer {token}",
+                "Cache-Control": "no-cache",
             },
             multipart=multipart,
             timeout=self.import_timeout,
+            stream=True,
         )
         # 解析 SSE 响应（与 import_auth_file 类似）
         completed = None
@@ -289,12 +294,3 @@ class Grok2APIClient:
         if completed is None:
             raise Grok2APIImportError("Grok Web SSO 上传响应未返回 complete 事件")
         return completed
-
-    def close(self) -> None:
-        """释放客户端自行创建的 HTTP 会话。"""
-        if not self._owns_session:
-            return
-        try:
-            self.session.close()
-        except Exception:
-            pass

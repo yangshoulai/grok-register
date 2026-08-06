@@ -227,12 +227,16 @@ class ReloginJobCoordinator:
 
             # Grok Web SSO 上传（如果开关打开）
             if bool(gr.config.get("grok2api_import_web_sso", False)):
+                client = None
                 try:
                     client = _grok2api.Grok2APIClient.from_config(gr.config)
                     client.upload_web_sso(sso)
                     self._set(stage="Grok Web SSO 上传完成")
                 except Exception as upload_exc:
                     log(f"[Grok2API] Grok Web SSO 上传失败: {upload_exc}")
+                finally:
+                    if client is not None:
+                        client.close()
 
             store.update_relogin_result(
                 account_id,

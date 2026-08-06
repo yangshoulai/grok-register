@@ -1077,6 +1077,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 auth_path_value = auth_path_value or str(gpath)
                 auth_entries.append(f"Grok2API: {gpath}")
                 if g2a_remote_configured and g2a_auto_import:
+                    client = None
                     try:
                         client = _grok2api.Grok2APIClient.from_config(config)
                         remote_result = client.import_auth_file(gpath)
@@ -1113,6 +1114,9 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                             grok2api_remote_status="failed",
                             grok2api_remote_error=str(remote_g2a_exc),
                         )
+                    finally:
+                        if client is not None:
+                            client.close()
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
                 auth_errors.append(f"Grok2API 失败: {g2a_exc}")
@@ -1130,6 +1134,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
         if g2a_remote_configured and g2a_upload_web_sso:
+            client = None
             try:
                 client = _grok2api.Grok2APIClient.from_config(config)
                 client.upload_web_sso(sso)
@@ -1140,6 +1145,9 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             except Exception as web_sso_exc:
                 _cpa_log(f"Grok2API Web SSO 上传失败: {web_sso_exc}")
                 auth_errors.append(f"Grok2API Web SSO 失败: {web_sso_exc}")
+            finally:
+                if client is not None:
+                    client.close()
         _set_result(
             status="success",
             auth_info=auth_entries + auth_errors,

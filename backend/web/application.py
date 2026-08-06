@@ -82,6 +82,11 @@ CONFIG_PUBLIC_KEYS = (
     "cpa_management_key",
     "cpa_account_proxy",
     "grok2api_auth_dir",
+    "grok2api_remote_url",
+    "grok2api_remote_username",
+    "grok2api_remote_password",
+    "grok2api_auto_import",
+    "grok2api_import_web_sso",
 )
 SENSITIVE_HINT_KEYS = {
     "duckmail_api_key",
@@ -822,9 +827,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        client = None
         try:
-            with Grok2APIClient.from_config(gr.config) as client:
-                result = client.import_auth_file(path, web_sso=rows[0].get("extra", {}).get("sso") or rows[0].get("sso") or "")
+            client = Grok2APIClient.from_config(gr.config)
+            result = client.import_auth_file(path)
         except Grok2APIImportError as exc:
             store.update_remote_import_status(
                 account_id,
@@ -833,6 +839,9 @@ def create_app() -> FastAPI:
                 error=str(exc),
             )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            if client is not None:
+                client.close()
         import_status = "partial" if int(result.get("syncFailed", 0) or 0) > 0 else "success"
         import_error = (
             f"远程同步失败 {result.get('syncFailed', 0)} 个"
