@@ -1126,7 +1126,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                             f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
                         )
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath)
+                            remote_result = client.import_auth_file(gpath, web_sso=config.get("grok2api_import_web_sso", ""))
                         imported_at = RegistrationRepository.now_text()
                         remote_status = (
                             "partial"

@@ -176,8 +176,11 @@ class Grok2APIClient:
         self._access_token = token
         return token
 
-    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
-        """自动登录并将一个 grok_build JSON 导入远程管理端。"""
+    def import_auth_file(self, file_path: str | Path, *, web_sso: str = "") -> Dict[str, Any]:
+        """自动登录并将一个 grok_build JSON 导入远程管理端。
+
+        如果提供 web_sso，则同时上传 grok-web-sso-tokens.txt 作为 side file。
+        """
         path, content = self._load_auth_document(file_path)
         token = self.login()
         multipart = CurlMime()
@@ -187,6 +190,13 @@ class Grok2APIClient:
             content_type="application/json",
             data=content,
         )
+        if web_sso:
+            multipart.addpart(
+                name="files",
+                filename="grok-web-sso-tokens.txt",
+                content_type="text/plain",
+                data=web_sso.encode("utf-8"),
+            )
         response = None
         try:
             request_kwargs = {
