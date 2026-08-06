@@ -301,6 +301,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "close_browser_on_stop",
             "cpa_auto_add",
             "grok2api_auto_import",
+            "grok2api_import_web_sso",
             "outlookemail_disable_after_cpa_success",
         ):
             value = bool(value)
@@ -823,7 +824,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             with Grok2APIClient.from_config(gr.config) as client:
-                result = client.import_auth_file(path)
+                result = client.import_auth_file(path, web_sso=rows[0].get("extra", {}).get("sso") or rows[0].get("sso") or "")
         except Grok2APIImportError as exc:
             store.update_remote_import_status(
                 account_id,

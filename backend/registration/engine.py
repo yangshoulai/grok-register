@@ -208,6 +208,7 @@ DEFAULT_CONFIG = {
     "grok2api_remote_username": "",
     "grok2api_remote_password": "",
     "grok2api_auto_import": True,
+    "grok2api_import_web_sso": False,
     "mailnest_api_key": "",
     "mailnest_project_code": "x-ai001",
     # YYDS：留空自动选已验证域名；填写则固定该域名
@@ -1077,7 +1078,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 if g2a_remote_configured and g2a_auto_import:
                     try:
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath)
+                            remote_result = client.import_auth_file(gpath, web_sso=config.get("grok2api_import_web_sso", ""))
                         imported_at = RegistrationRepository.now_text()
                         remote_status = (
                             "partial"

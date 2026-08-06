@@ -455,6 +455,12 @@ export function SettingsPage() {
                   checked={!!config.grok2api_auto_import}
                   onCheckedChange={(value) => setField("grok2api_auto_import", value)}
                 />
+                <ToggleRow
+                  title="导入 Grok Web SSO"
+                  description="导入 Grok2API JSON 时，同时上传 grok-web-sso-tokens.txt（包含注册获得的 SSO cookie）"
+                  checked={!!config.grok2api_import_web_sso}
+                  onCheckedChange={(value) => setField("grok2api_import_web_sso", value)}
+                />
               </CardContent>
             </Card>
           </div>
