@@ -942,6 +942,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
     g2a_dir = str(config.get("grok2api_auth_dir", "") or "").strip()
     g2a_remote_configured = _grok2api.Grok2APIClient.is_configured(config)
     g2a_auto_import = bool(config.get("grok2api_auto_import", False))
+    g2a_upload_web_sso = bool(config.get("grok2api_import_web_sso", False))
     _set_result(
         cpa_remote_status="ready" if remote_url and management_key else "not_configured",
         grok2api_remote_status="ready" if g2a_remote_configured else "not_configured",
@@ -1078,7 +1079,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 if g2a_remote_configured and g2a_auto_import:
                     try:
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath, web_sso=config.get("grok2api_import_web_sso", ""))
+                            remote_result = client.import_auth_file(gpath)
                         imported_at = RegistrationRepository.now_text()
                         remote_status = (
                             "partial"
@@ -1128,6 +1129,17 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             _cpa_log("token 已换出但 CPA/Grok2API 均未写入成功")
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
+        if g2a_remote_configured and g2a_upload_web_sso:
+            try:
+                with _grok2api.Grok2APIClient.from_config(config) as client:
+                    client.upload_web_sso(sso)
+                _cpa_log("已上传 Web SSO 到 Grok2API")
+                auth_entries.append(
+                    f"Grok2API Web SSO: {str(config.get('grok2api_remote_url') or '').rstrip('/')}"
+                )
+            except Exception as web_sso_exc:
+                _cpa_log(f"Grok2API Web SSO 上传失败: {web_sso_exc}")
+                auth_errors.append(f"Grok2API Web SSO 失败: {web_sso_exc}")
         _set_result(
             status="success",
             auth_info=auth_entries + auth_errors,
