@@ -829,8 +829,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         client = None
         try:
-            with Grok2APIClient.from_config(gr.config) as client:
-                result = client.import_auth_file(path, web_sso=rows[0].get("extra", {}).get("sso") or rows[0].get("sso") or "")
+            client = Grok2APIClient.from_config(gr.config)
+            result = client.import_auth_file(path)
         except Grok2APIImportError as exc:
             store.update_remote_import_status(
                 account_id,
