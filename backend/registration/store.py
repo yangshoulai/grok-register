@@ -375,6 +375,7 @@ class RegistrationRepository:
         *,
         account_file: str = "",
         cpa_detail: Optional[Dict[str, Any]] = None,
+        email_disable_detail: Optional[Dict[str, Any]] = None,
         status: str = "success",
         error: str = "",
         screenshot_path: str = "",
@@ -449,6 +450,32 @@ class RegistrationRepository:
                         ),
                     }
                 )
+                disable_detail = dict(email_disable_detail or {})
+                if disable_detail:
+                    values.update(
+                        {
+                            "email_account_id": str(
+                                disable_detail.get("account_id") or ""
+                            ),
+                            "email_disable_status": str(
+                                disable_detail.get("status") or "not_attempted"
+                            ).strip().lower(),
+                            "email_disabled_at": str(
+                                disable_detail.get("disabled_at") or ""
+                            ),
+                            "email_disable_error": str(
+                                disable_detail.get("error") or ""
+                            ),
+                        }
+                    )
+                    assignments.extend(
+                        [
+                            "email_account_id = :email_account_id",
+                            "email_disable_status = :email_disable_status",
+                            "email_disabled_at = :email_disabled_at",
+                            "email_disable_error = :email_disable_error",
+                        ]
+                    )
                 assignments.extend(
                     [
                         "account_file = :account_file",

@@ -172,6 +172,7 @@ class ReloginJobCoordinator:
         email = str(record.get("email") or "").strip()
         password = str(record.get("password") or "")
         cpa_detail: Dict[str, Any] = {}
+        email_disable_detail: Dict[str, Any] = {}
         account_file = ""
 
         def log(message: str) -> None:
@@ -217,13 +218,17 @@ class ReloginJobCoordinator:
                 if bool(gr.config.get("outlookemail_disable_after_cpa_success", False)):
                     try:
                         from backend.registration.engine import disable_outlookemail_after_cpa_success
-                        detail = disable_outlookemail_after_cpa_success(
+                        email_disable_detail = disable_outlookemail_after_cpa_success(
                             email, cpa_detail={"status": "success"}, log_callback=log
                         )
-                        if "status" in detail and detail["status"] == "success":
+                        if email_disable_detail.get("status") == "success":
                             self._set(stage="OutlookEmail 已停用")
                     except Exception as disable_exc:
                         log(f"[OutlookEmail 停用] 失败: {disable_exc}")
+                        email_disable_detail = {
+                            "status": "failed",
+                            "error": str(disable_exc),
+                        }
 
             # Grok Web SSO 上传（如果开关打开）
             if bool(gr.config.get("grok2api_import_web_sso", False)):
@@ -242,6 +247,7 @@ class ReloginJobCoordinator:
                 account_id,
                 account_file=account_file,
                 cpa_detail=cpa_detail,
+                email_disable_detail=email_disable_detail or None,
                 status="success",
                 error="",
             )
