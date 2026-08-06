@@ -1078,8 +1078,8 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 auth_entries.append(f"Grok2API: {gpath}")
                 if g2a_remote_configured and g2a_auto_import:
                     try:
-                        with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath)
+                        client = _grok2api.Grok2APIClient.from_config(config)
+                        remote_result = client.import_auth_file(gpath)
                         imported_at = RegistrationRepository.now_text()
                         remote_status = (
                             "partial"
@@ -1131,8 +1131,8 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             return False
         if g2a_remote_configured and g2a_upload_web_sso:
             try:
-                with _grok2api.Grok2APIClient.from_config(config) as client:
-                    client.upload_web_sso(sso)
+                client = _grok2api.Grok2APIClient.from_config(config)
+                client.upload_web_sso(sso)
                 _cpa_log("已上传 Web SSO 到 Grok2API")
                 auth_entries.append(
                     f"Grok2API Web SSO: {str(config.get('grok2api_remote_url') or '').rstrip('/')}"
