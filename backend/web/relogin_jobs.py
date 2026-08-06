@@ -211,6 +211,20 @@ class ReloginJobCoordinator:
             cpa_success = cpa_ok and str(cpa_detail.get("status") or "") == "success"
             if not cpa_success:
                 raise RuntimeError(str(cpa_detail.get("error") or "授权文件重建未完成"))
+
+            # OutlookEmail 停用逻辑（注册流程中已存在）
+            if email.lower().endswith("@outlookemail.com") or "outlookemail" in email.lower():
+                if bool(gr.config.get("outlookemail_disable_after_cpa_success", False)):
+                    try:
+                        from backend.registration.engine import disable_outlookemail_after_cpa_success
+                        detail = disable_outlookemail_after_cpa_success(
+                            email, cpa_detail={"status": "success"}, log_callback=log
+                        )
+                        if "status" in detail and detail["status"] == "success":
+                            self._set(stage="OutlookEmail 已停用")
+                    except Exception as disable_exc:
+                        log(f"[OutlookEmail 停用] 失败: {disable_exc}")
+
             store.update_relogin_result(
                 account_id,
                 account_file=account_file,
