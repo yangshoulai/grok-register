@@ -175,11 +175,8 @@ class Grok2APIClient:
         self._access_token = token
         return token
 
-    def import_auth_file(self, file_path: str | Path, *, web_sso: str = "") -> Dict[str, Any]:
-        """自动登录并将一个 grok_build JSON 导入远程管理端。
-
-        如果提供 web_sso，则同时上传 grok-web-sso-tokens.txt 作为 side file。
-        """
+    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
+        """自动登录并将一个 grok_build JSON 导入远程管理端。"""
         path, content = self._load_auth_document(file_path)
         token = self.login()
         multipart = CurlMime()
@@ -189,13 +186,6 @@ class Grok2APIClient:
             content_type="application/json",
             data=content,
         )
-        if web_sso:
-            multipart.addpart(
-                name="files",
-                filename="grok-web-sso-tokens.txt",
-                content_type="text/plain",
-                data=web_sso.encode("utf-8"),
-            )
         response = None
         try:
             request_kwargs = {
@@ -269,5 +259,42 @@ class Grok2APIClient:
     def __enter__(self) -> "Grok2APIClient":
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        self.close()
+    def upload_web_sso(self, sso: str) -> Dict[str, Any]:
+        """上传 Grok Web SSO 文件（grok-web-sso-tokens.txt）到远程管理端。
+
+        使用 /api/admin/v1/accounts/web/import 接口，multipart/form-data 上传。
+        """
+        token = self.login()
+        multipart = CurlMime()
+        multipart.addpart(
+            name="files",
+            filename="grok-web-sso-tokens.txt",
+            content_type="text/plain",
+            data=sso.encode("utf-8"),
+        )
+        response = self.session.post(
+            f"{self.base_url}/api/admin/v1/accounts/web/import",
+            headers={
+                "Accept": "text/event-stream",
+                "Authorization": f"Bearer {token}",
+            },
+            multipart=multipart,
+            timeout=self.import_timeout,
+        )
+        # 解析 SSE 响应（与 import_auth_file 类似）
+        completed = None
+        for event, payload in self._iter_sse_events(response.iter_lines()):
+            if event == "complete":
+                completed = payload
+        if completed is None:
+            raise Grok2APIImportError("Grok Web SSO 上传响应未返回 complete 事件")
+        return completed
+
+    def close(self) -> None:
+        """释放客户端自行创建的 HTTP 会话。"""
+        if not self._owns_session:
+            return
+        try:
+            self.session.close()
+        except Exception:
+            pass

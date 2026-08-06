@@ -225,6 +225,15 @@ class ReloginJobCoordinator:
                     except Exception as disable_exc:
                         log(f"[OutlookEmail 停用] 失败: {disable_exc}")
 
+            # Grok Web SSO 上传（如果开关打开）
+            if bool(gr.config.get("grok2api_import_web_sso", False)):
+                try:
+                    client = _grok2api.Grok2APIClient.from_config(gr.config)
+                    client.upload_web_sso(sso)
+                    self._set(stage="Grok Web SSO 上传完成")
+                except Exception as upload_exc:
+                    log(f"[Grok2API] Grok Web SSO 上传失败: {upload_exc}")
+
             store.update_relogin_result(
                 account_id,
                 account_file=account_file,
