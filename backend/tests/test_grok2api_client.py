@@ -89,7 +89,7 @@ class Grok2APIClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "g2a-fixture.json"
             path.write_text(json.dumps({"provider": "grok_build"}), encoding="utf-8")
-            result = client.import_auth_file(path)
+            result = client.import_auth_file(path, web_sso="")
         self.assertEqual(result["created"], 1)
         self.assertIn("multipart", session.calls[1][1])
         self.assertEqual(
