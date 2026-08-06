@@ -213,7 +213,7 @@ class ReloginJobCoordinator:
                 raise RuntimeError(str(cpa_detail.get("error") or "授权文件重建未完成"))
 
             # OutlookEmail 停用逻辑（注册流程中已存在）
-            if email.lower().endswith("@outlookemail.com") or "outlookemail" in email.lower():
+            if str(record.get("outlookemail_source") or "").strip() == "outlookemail" or gr.config.get("email_provider") == "outlookemail":
                 if bool(gr.config.get("outlookemail_disable_after_cpa_success", False)):
                     try:
                         from backend.registration.engine import disable_outlookemail_after_cpa_success
