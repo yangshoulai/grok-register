@@ -1183,6 +1183,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             client = None
             try:
                 client = _grok2api.Grok2APIClient.from_config(config)
+                client.delete_web_sso_accounts(email)
                 client.upload_web_sso(sso)
                 _cpa_log("已上传 Web SSO 到 Grok2API")
                 auth_entries.append(

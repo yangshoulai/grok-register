@@ -35,6 +35,14 @@ class FakeSession:
         self.calls.append((url, dict(kwargs)))
         return self.responses.pop(0)
 
+    def get(self, url, **kwargs):
+        self.calls.append((url, dict(kwargs)))
+        return self.responses.pop(0)
+
+    def delete(self, url, **kwargs):
+        self.calls.append((url, dict(kwargs)))
+        return self.responses.pop(0)
+
     def close(self):
         self.closed = True
 
@@ -131,6 +139,68 @@ class Grok2APIClientTests(unittest.TestCase):
             path.write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(Grok2APIImportError, "fixture failed"):
                 client.import_auth_file(path)
+
+    def test_delete_web_sso_accounts_queries_and_deletes_all_matches(self):
+        search_response = FakeResponse(
+            payload={
+                "data": {
+                    "items": [
+                        {"id": "385", "email": "fixture@example.com"},
+                        {"id": "386", "email": "fixture@example.com"},
+                    ],
+                    "total": 2,
+                }
+            }
+        )
+        delete_response_one = FakeResponse(payload={"data": {"deleted": 1}})
+        delete_response_two = FakeResponse(payload={"data": {"deleted": 1}})
+        session = FakeSession(
+            [
+                FakeResponse(
+                    payload={"data": {"tokens": {"accessToken": "fresh-token"}}}
+                ),
+                search_response,
+                delete_response_one,
+                delete_response_two,
+            ]
+        )
+        client = Grok2APIClient(
+            "https://example.test", "admin", "secret", session=session
+        )
+
+        result = client.delete_web_sso_accounts("fixture@example.com")
+
+        self.assertEqual(result["ids"], ["385", "386"])
+        self.assertEqual(
+            session.calls[1][0], "https://example.test/api/admin/v1/accounts"
+        )
+        self.assertEqual(
+            session.calls[1][1]["params"],
+            {
+                "page": 1,
+                "pageSize": 20,
+                "search": "fixture@example.com",
+                "sortBy": "createdAt",
+                "sortOrder": "desc",
+                "provider": "grok_web",
+            },
+        )
+        self.assertEqual(
+            session.calls[2][0], "https://example.test/api/admin/v1/accounts/385"
+        )
+        self.assertEqual(
+            session.calls[2][1]["json"],
+            {
+                "provider": "grok_web",
+                "linkedDeleteTargets": ["grok_console", "grok_build"],
+            },
+        )
+        self.assertEqual(
+            session.calls[3][0], "https://example.test/api/admin/v1/accounts/386"
+        )
+        self.assertTrue(search_response.closed)
+        self.assertTrue(delete_response_one.closed)
+        self.assertTrue(delete_response_two.closed)
 
     def test_context_manager_closes_owned_session_only(self):
         external = FakeSession([])

@@ -17,7 +17,9 @@ class Grok2APIClient:
     """封装管理员登录、令牌复用、multipart 上传与 SSE 结果解析。"""
 
     LOGIN_PATH = "/api/admin/v1/auth/login"
+    ACCOUNTS_PATH = "/api/admin/v1/accounts"
     IMPORT_PATH = "/api/admin/v1/accounts/import"
+    WEB_IMPORT_PATH = "/api/admin/v1/accounts/web/import"
     CONFIG_KEYS = (
         "grok2api_remote_url",
         "grok2api_remote_username",
@@ -273,6 +275,107 @@ class Grok2APIClient:
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         self.close()
 
+    def delete_web_sso_accounts(self, email: str) -> Dict[str, Any]:
+        """删除远程管理端中指定邮箱已有的全部 Grok Web 账号。
+
+        管理端的 Web SSO 导入不会覆盖同邮箱账号，因此上传前先按邮箱查询
+        ``grok_web`` 账号，再逐个删除，并同步删除关联的 Console/Build 账号。
+        """
+        normalized_email = str(email or "").strip()
+        if not normalized_email:
+            raise Grok2APIImportError("删除 Grok Web SSO 账号时邮箱为空")
+
+        token = self.login()
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
+        try:
+            response = self.session.get(
+                f"{self.base_url}{self.ACCOUNTS_PATH}",
+                params={
+                    "page": 1,
+                    "pageSize": 20,
+                    "search": normalized_email,
+                    "sortBy": "createdAt",
+                    "sortOrder": "desc",
+                    "provider": "grok_web",
+                },
+                headers=headers,
+                timeout=self.import_timeout,
+            )
+        except Exception as exc:
+            raise Grok2APIImportError(
+                f"连接 Grok2API 账号查询接口失败: {exc}"
+            ) from exc
+
+        try:
+            if int(getattr(response, "status_code", 0) or 0) != 200:
+                raise Grok2APIImportError(
+                    self._response_error(response, "Grok2API 账号查询失败")
+                )
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise Grok2APIImportError(
+                    f"Grok2API 账号查询响应不是有效 JSON: {exc}"
+                ) from exc
+            data = payload.get("data") if isinstance(payload, dict) else None
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                raise Grok2APIImportError("Grok2API 账号查询响应缺少 data.items")
+            account_ids = [
+                str(item.get("id") or "").strip()
+                for item in items
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+        delete_payload = {
+            "provider": "grok_web",
+            "linkedDeleteTargets": ["grok_console", "grok_build"],
+        }
+        for account_id in account_ids:
+            try:
+                response = self.session.delete(
+                    f"{self.base_url}{self.ACCOUNTS_PATH}/{account_id}",
+                    headers={
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=delete_payload,
+                    timeout=self.import_timeout,
+                )
+            except Exception as exc:
+                raise Grok2APIImportError(
+                    f"删除 Grok2API 账号 {account_id} 失败: {exc}"
+                ) from exc
+            try:
+                status = int(getattr(response, "status_code", 0) or 0)
+                if status < 200 or status >= 300:
+                    raise Grok2APIImportError(
+                        self._response_error(
+                            response, f"删除 Grok2API 账号 {account_id} 失败"
+                        )
+                    )
+            finally:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+        return {
+            "email": normalized_email,
+            "matched": len(account_ids),
+            "deleted": len(account_ids),
+            "ids": account_ids,
+        }
+
     def upload_web_sso(self, sso: str) -> Dict[str, Any]:
         """上传 Grok Web SSO 文件（grok-web-sso-tokens.txt）到远程管理端。
 
@@ -287,7 +390,7 @@ class Grok2APIClient:
             data=sso.encode("utf-8"),
         )
         response = self.session.post(
-            f"{self.base_url}/api/admin/v1/accounts/web/import",
+            f"{self.base_url}{self.WEB_IMPORT_PATH}",
             headers={
                 "Accept": "text/event-stream",
                 "Authorization": f"Bearer {token}",

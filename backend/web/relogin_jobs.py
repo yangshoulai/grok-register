@@ -235,6 +235,7 @@ class ReloginJobCoordinator:
                 client = None
                 try:
                     client = _grok2api.Grok2APIClient.from_config(gr.config)
+                    client.delete_web_sso_accounts(email)
                     client.upload_web_sso(sso)
                     self._set(stage="Grok Web SSO 上传完成")
                 except Exception as upload_exc:
