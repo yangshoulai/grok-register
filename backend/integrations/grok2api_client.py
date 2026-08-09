@@ -401,7 +401,7 @@ class Grok2APIClient:
             data=sso.encode("utf-8"),
         )
         response = self.session.post(
-            f"{self.base_url}{self.WEB_IMPORT_PATH}",
+            f"{self.base_url}{self.IMPORT_PATHS.get('grok_web')}",
             headers={
                 "Accept": "text/event-stream",
                 "Authorization": f"Bearer {token}",
