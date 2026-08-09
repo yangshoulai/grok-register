@@ -9,9 +9,11 @@ import datetime
 import os
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import quote
 
 
 class ReloginJobCoordinator:
@@ -28,6 +30,8 @@ class ReloginJobCoordinator:
         self._completed_count = 0
         self._success_count = 0
         self._failed_count = 0
+        self._run_id = ""
+        self._items: List[Dict[str, Any]] = []
         self._thread: Optional[threading.Thread] = None
 
     def status(self) -> Dict[str, Any]:
@@ -44,6 +48,9 @@ class ReloginJobCoordinator:
                 "completed_count": self._completed_count,
                 "success_count": self._success_count,
                 "failed_count": self._failed_count,
+                "run_id": self._run_id,
+                # 逐条浅拷贝：list() 的元素仍是同一批可变 dict，会把内部状态泄漏给调用方。
+                "items": [dict(item) for item in self._items],
             }
 
     def _set(self, **values: Any) -> None:
@@ -83,17 +90,29 @@ class ReloginJobCoordinator:
 
         runnable: List[Dict[str, Any]] = []
         validation_errors: List[str] = []
+        # 预置每个账号的条目并保持请求顺序，运行中即可增量读取，且 len(items) == total_count 恒成立。
+        seed_items: List[Dict[str, Any]] = []
         for account_id in normalized_ids:
             record = records_by_id.get(account_id)
+            email = str((record or {}).get("email") or "").strip()
+            item: Dict[str, Any] = {
+                "account_id": account_id,
+                "email": email,
+                "status": "pending",
+                "error": "",
+            }
+            seed_items.append(item)
             if record is None:
+                item.update(status="failed", error="记录不存在")
                 validation_errors.append(f"账号 {account_id}: 记录不存在")
                 continue
-            email = str(record.get("email") or "").strip()
             password = str(record.get("password") or "")
             label = email or f"账号 {account_id}"
             if not email or "@" not in email:
+                item.update(status="failed", error="缺少有效邮箱")
                 validation_errors.append(f"{label}: 缺少有效邮箱")
             elif not password:
+                item.update(status="failed", error="没有保存密码")
                 validation_errors.append(f"{label}: 没有保存密码")
             else:
                 runnable.append(record)
@@ -115,24 +134,44 @@ class ReloginJobCoordinator:
             self._completed_count = len(validation_errors)
             self._success_count = 0
             self._failed_count = len(validation_errors)
+            # 与计数同锁赋值，避免并发 status() 读到「新计数 + 旧 items」。
+            self._run_id = uuid.uuid4().hex
+            self._items = seed_items
+
+        job_items = seed_items
+        job_index = {int(item["account_id"]): item for item in job_items}
 
         def runner() -> None:
-            errors = list(validation_errors)
             try:
                 for record in runnable:
                     error = ""
+                    account_id = int(record.get("id") or 0)
+                    outcome: Any = ""
                     try:
                         self._set(
-                            account_id=int(record.get("id") or 0),
+                            account_id=account_id,
                             email=str(record.get("email") or "").strip(),
                             stage="启动浏览器",
                         )
-                        error = self._run_record(record, store)
+                        outcome = self._run_record(record, store)
+                        error = str(outcome.get("error") or "") if isinstance(outcome, dict) else str(outcome or "")
                     except Exception as exc:
                         error = str(exc) or exc.__class__.__name__
-                    if error:
-                        errors.append(f"{record.get('email') or record.get('id')}: {error}")
                     with self._lock:
+                        item = job_index.get(account_id)
+                        if item is not None:
+                            item["status"] = "failed" if error else "success"
+                            # 截断仅作用于轮询下发的内存副本；落库错误由 _run_record 完整保存。
+                            item["error"] = str(error)[:500]
+                            if isinstance(outcome, dict):
+                                for key in (
+                                    "stage", "error_type", "url", "page_title", "visible_error",
+                                    "page_text", "controls", "screenshot_url", "traceback",
+                                    "screenshot_name", "captured_at",
+                                ):
+                                    value = str(outcome.get(key) or "")
+                                    if value:
+                                        item[key] = value
                         self._completed_count += 1
                         if error:
                             self._failed_count += 1
@@ -140,14 +179,20 @@ class ReloginJobCoordinator:
                             self._success_count += 1
             finally:
                 with self._lock:
+                    for item in job_items:
+                        if item["status"] == "pending":
+                            item.update(status="failed", error="任务提前结束")
+                            self._completed_count += 1
+                            self._failed_count += 1
+                    failed = [item for item in job_items if item["status"] == "failed"]
                     if self._total_count == 1:
-                        self._stage = "重新登录失败" if errors else "重新登录完成"
-                        self._error = errors[0].split(": ", 1)[-1] if errors else ""
+                        self._stage = "重新登录失败" if failed else "重新登录完成"
+                        self._error = failed[0]["error"] if failed else ""
                     else:
                         self._stage = (
                             f"批量重新登录完成（成功 {self._success_count}，失败 {self._failed_count}）"
                         )
-                        self._error = f"{self._failed_count} 个账号重新登录失败" if errors else ""
+                        self._error = f"{self._failed_count} 个账号重新登录失败" if failed else ""
                     self._running = False
                     self._finished_at = time.time()
 
@@ -159,14 +204,25 @@ class ReloginJobCoordinator:
         try:
             self._thread.start()
         except Exception as exc:
-            self._set(running=False, error=str(exc), finished_at=time.time())
+            with self._lock:
+                for item in seed_items:
+                    if item["status"] == "pending":
+                        item.update(status="failed", error=str(exc))
+                self._running = False
+                self._stage = "重新登录启动失败"
+                self._error = str(exc)
+                self._finished_at = time.time()
             raise
         return self.status()
 
     def _run_record(self, record: Dict[str, Any], store: Any) -> str:
         from backend.automation.session import stop_browser
         from backend.registration import engine as gr
-        from backend.registration.login_flow import capture_login_failure, login_with_password
+        from backend.registration.login_flow import (
+            capture_login_diagnostics,
+            capture_login_failure,
+            login_with_password,
+        )
 
         account_id = int(record.get("id") or 0)
         email = str(record.get("email") or "").strip()
@@ -255,7 +311,11 @@ class ReloginJobCoordinator:
             return ""
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
-            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            failure_stage = str(self.status().get("stage") or "重新登录")
+            diagnostic = capture_login_diagnostics()
+            trace_text = traceback.format_exc()
+            captured_at = datetime.datetime.now().astimezone()
+            stamp = captured_at.strftime("%Y%m%d_%H%M%S_%f")
             safe_email = email.replace("/", "_").replace("\\", "_")
             try:
                 screenshot_path = capture_login_failure(
@@ -266,6 +326,11 @@ class ReloginJobCoordinator:
                 )
             except Exception:
                 screenshot_path = ""
+            screenshot_name = Path(screenshot_path).name if screenshot_path else ""
+            screenshot_url = (
+                f"/api/accounts/{account_id}/relogin-screenshots/{quote(screenshot_name, safe='')}"
+                if screenshot_name else ""
+            )
             store.update_relogin_result(
                 account_id,
                 account_file=account_file,
@@ -273,8 +338,34 @@ class ReloginJobCoordinator:
                 status="partial" if account_file else "failed",
                 error=error,
                 screenshot_path=screenshot_path,
+                diagnostics={
+                    "stage": failure_stage,
+                    "error_type": exc.__class__.__name__,
+                    "url": diagnostic.get("url", ""),
+                    "page_title": diagnostic.get("title", ""),
+                    "visible_error": diagnostic.get("visible_error", ""),
+                    "page_text": diagnostic.get("page_text", ""),
+                    "controls": diagnostic.get("controls", ""),
+                    "screenshot_path": screenshot_path,
+                    "screenshot_name": screenshot_name,
+                    "captured_at": captured_at.isoformat(timespec="seconds"),
+                    "traceback": trace_text,
+                },
             )
-            return error
+            return {
+                "error": error,
+                "stage": failure_stage,
+                "error_type": exc.__class__.__name__,
+                "url": diagnostic.get("url", ""),
+                "page_title": diagnostic.get("title", ""),
+                "visible_error": diagnostic.get("visible_error", ""),
+                "page_text": diagnostic.get("page_text", ""),
+                "controls": diagnostic.get("controls", ""),
+                "screenshot_url": screenshot_url,
+                "screenshot_name": screenshot_name,
+                "captured_at": captured_at.isoformat(timespec="seconds"),
+                "traceback": trace_text[-8000:],
+            }
         finally:
             try:
                 stop_browser(force=True)

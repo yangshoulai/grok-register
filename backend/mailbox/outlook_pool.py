@@ -557,20 +557,40 @@ def acquire_email(
     else:
         accounts = get_accounts(http_get, api_base, api_key, group_id=group_id)
 
+    total = 0
+    active = 0
+    unavailable_count = 0
     candidates = []
     for item in accounts:
         email = item_email(item)
-        if not email or not item_is_active(item):
+        if not email:
             continue
+        total += 1
+        if not item_is_active(item):
+            continue
+        active += 1
         if is_unavailable:
             try:
                 if is_unavailable(email):
+                    unavailable_count += 1
                     continue
             except Exception:
                 pass
         candidates.append(item)
     if not candidates:
-        raise Exception("OutlookEmail 邮箱池为空或已全部使用")
+        if total <= 0:
+            raise Exception("OutlookEmail 邮箱池为空，未返回任何账号")
+        if active <= 0:
+            raise Exception(
+                f"OutlookEmail 邮箱池中没有 active 账号（共 {total} 个，均已停用或不可用）"
+            )
+        if unavailable_count > 0:
+            raise Exception(
+                "OutlookEmail 可取邮箱均已在本地标记为已注册/已消耗"
+                f"（active {active} 个，其中已消耗 {unavailable_count} 个）。"
+                "请补充新邮箱，或检查已注册账号是否已正确停用。"
+            )
+        raise Exception("OutlookEmail 当前没有可分配的邮箱")
 
     mode = str(pick_mode or "random").strip().lower()
     with _state_lock:
@@ -594,7 +614,7 @@ def acquire_email(
                     account = item
                     break
     if account is None:
-        raise Exception("OutlookEmail 可用邮箱已被当前运行占用")
+        raise Exception("OutlookEmail 可取邮箱均已被当前任务占用（并发预留），不是邮箱池为空")
     email = item_email(account)
     with _state_lock:
         _reserved_accounts[email.lower()] = dict(account)

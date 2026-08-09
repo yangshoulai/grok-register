@@ -1,154 +1,210 @@
+import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import {
-  CircleDot,
-  Database,
-  LayoutDashboard,
-  LogOut,
-  PlayCircle,
-  Settings,
-  Sparkles,
-  Users,
-} from "lucide-react";
+import { Activity, Database, LogOut, Menu, MoreHorizontal, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
+import { mobilePrimaryItems, navigationGroups, navigationItems } from "@/app/navigation";
 import { cn } from "@/lib/utils";
-
-const nav = [
-  { to: "/", label: "仪表盘", shortLabel: "首页", icon: LayoutDashboard },
-  { to: "/accounts", label: "账号管理", shortLabel: "账号", icon: Users },
-  { to: "/register", label: "启动注册", shortLabel: "注册", icon: PlayCircle },
-  { to: "/settings", label: "系统设置", shortLabel: "设置", icon: Settings },
-];
 
 function StatusPill({ running, compact = false }: { running?: boolean; compact?: boolean }) {
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium",
+        "inline-flex min-h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium",
         running
-          ? "border-amber-200 bg-amber-50 text-amber-700"
-          : "border-emerald-200 bg-emerald-50 text-emerald-700"
+          ? "border-amber-200 bg-amber-50 text-amber-800"
+          : "border-emerald-200 bg-emerald-50 text-emerald-800"
       )}
     >
-      <span className={cn("h-2 w-2 rounded-full", running ? "bg-amber-500 animate-pulse" : "bg-emerald-500")} />
+      <span className={cn("h-1.5 w-1.5 rounded-full", running ? "animate-pulse bg-amber-500" : "bg-emerald-500")} />
       {compact ? (running ? "运行中" : "空闲") : running ? "注册任务运行中" : "系统空闲"}
     </div>
   );
 }
 
+function Brand() {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold tracking-wide text-white">
+        GR
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-semibold tracking-tight text-slate-950">Grok Register</div>
+        <div className="truncate text-[11px] text-slate-500">账号与授权控制台</div>
+      </div>
+    </div>
+  );
+}
+
+function NavigationContent({ onNavigate, collapsed = false }: { onNavigate?: () => void; collapsed?: boolean }) {
+  return (
+    <nav className="flex flex-col gap-5" aria-label="主导航">
+      {navigationGroups.map((group) => (
+        <section key={group.label}>
+          {collapsed ? <div className="mx-2 mb-2 border-t border-slate-100" /> : <div className="mb-1.5 px-3 text-[11px] font-medium uppercase tracking-[0.08em] text-slate-400">{group.label}</div>}
+          <div className="space-y-0.5">
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to !== "/accounts/relogin/history"}
+                  onClick={onNavigate}
+                  title={collapsed ? item.label : undefined}
+                  className={({ isActive }) =>
+                    cn(
+                      "relative flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm transition-colors",
+                      collapsed && "justify-center px-2",
+                      isActive
+                        ? "bg-sky-50 font-medium text-sky-700"
+                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+                    )
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" strokeWidth={1.8} aria-hidden="true" />
+                  <span className={cn("truncate", collapsed && "sr-only")}>{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </nav>
+  );
+}
+
 export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogout?: () => void }) {
   const location = useLocation();
-  const current = nav.find((item) =>
-    item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("grok-sidebar-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const current = useMemo(
+    () =>
+      [...navigationItems]
+        .sort((a, b) => b.to.length - a.to.length)
+        .find((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)),
+    [location.pathname]
+  );
+  const primaryActive = mobilePrimaryItems.some(
+    (item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)
   );
 
+  useEffect(() => setMobileMenuOpen(false), [location.pathname]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("grok-sidebar-collapsed", sidebarCollapsed ? "1" : "0");
+    } catch {
+      // 浏览器禁用本地存储时只保留当前会话状态。
+    }
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    document.body.style.overflow = mobileMenuOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileMenuOpen]);
+
   return (
-    <div className="min-h-[100dvh] bg-background/70 text-foreground">
+    <div className="min-h-[100dvh] bg-[#f7f8f7] text-foreground">
       <a
         href="#main-content"
-        className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus:translate-y-0"
+        className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-transform focus:translate-y-0"
       >
         跳到主要内容
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-card px-4 py-5 lg:flex">
-        <div className="mb-7 flex items-center gap-3 px-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-            <Sparkles className="h-5 w-5" aria-hidden="true" />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold tracking-wide">Grok Register</div>
-            <div className="text-xs text-muted-foreground">CPA 账号控制台</div>
-          </div>
+      <header className="fixed inset-x-0 top-0 z-50 flex h-12 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-5">
+        <div className="flex items-center gap-2">
+          <Brand />
+          <button
+            type="button"
+            className="ml-2 hidden h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900 lg:flex"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            aria-label={sidebarCollapsed ? "展开侧栏" : "折叠侧栏"}
+            title={sidebarCollapsed ? "展开侧栏" : "折叠侧栏"}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </button>
         </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="hidden sm:inline">本地控制台</span>
+          <StatusPill running={jobRunning} compact />
+        </div>
+      </header>
 
-        <nav className="flex flex-1 flex-col gap-1" aria-label="主导航">
-          {nav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/"}
-                className={({ isActive }) =>
-                  cn(
-                    "flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  )
-                }
+      <aside className={cn("fixed inset-y-0 left-0 top-12 z-40 hidden flex-col border-r border-slate-200 bg-white transition-[width] duration-200 lg:flex", sidebarCollapsed ? "w-[68px]" : "w-[208px]")}>
+        <div className={cn("flex-1 overflow-y-auto py-5", sidebarCollapsed ? "px-2" : "px-3")}>
+          <NavigationContent collapsed={sidebarCollapsed} />
+        </div>
+        <div className={cn("border-t border-slate-100", sidebarCollapsed ? "p-2" : "p-3")}>
+          {sidebarCollapsed ? (
+            <div className="space-y-2">
+              <div className="flex h-10 items-center justify-center rounded-lg bg-slate-50" title={jobRunning ? "注册任务运行中" : "系统空闲"}>
+                <span className={cn("h-2 w-2 rounded-full", jobRunning ? "animate-pulse bg-amber-500" : "bg-emerald-500")} />
+              </div>
+              {onLogout ? <button type="button" onClick={onLogout} className="flex h-10 w-full items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50" aria-label="退出登录" title="退出登录"><LogOut className="h-4 w-4" /></button> : null}
+            </div>
+          ) : <div className="rounded-xl bg-slate-50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-slate-500">运行状态</span>
+              <StatusPill running={jobRunning} compact />
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+              <Database className="h-3.5 w-3.5 text-sky-600" aria-hidden="true" />
+              SQLite 已连接
+            </div>
+            {onLogout ? (
+              <button
+                type="button"
+                onClick={onLogout}
+                className="mt-3 flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
-                <Icon className="h-4 w-4" aria-hidden="true" />
-                <span>{item.label}</span>
-              </NavLink>
-            );
-          })}
-        </nav>
-
-        <div className="mt-5 rounded-2xl border bg-muted/45 p-4">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <span className="text-xs font-medium text-muted-foreground">任务状态</span>
-            <StatusPill running={jobRunning} compact />
-          </div>
-          <div className="flex items-center gap-2 text-xs leading-5 text-muted-foreground">
-            <Database className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-            本地 SQLite · 轻量 Web
-          </div>
-          {onLogout ? (
-            <button
-              type="button"
-              onClick={onLogout}
-              className="mt-3 flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border bg-card px-3 text-xs font-medium text-foreground hover:bg-muted"
-            >
-              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-              退出登录
-            </button>
-          ) : null}
+                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                退出登录
+              </button>
+            ) : null}
+          </div>}
         </div>
       </aside>
 
-      <div className="min-w-0 lg:pl-64">
-        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-3 border-b bg-card/95 px-4 backdrop-blur lg:hidden">
+      <div className={cn("min-w-0 pt-12 transition-[padding] duration-200", sidebarCollapsed ? "lg:pl-[68px]" : "lg:pl-[208px]")}>
+        <header className="sticky top-12 z-30 flex min-h-14 items-center justify-between border-b border-slate-200 bg-white/95 px-4 backdrop-blur lg:hidden">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Sparkles className="h-4 w-4" aria-hidden="true" />
+            <button
+              type="button"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white lg:hidden"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="打开导航"
+            >
+              <Menu className="h-4 w-4" aria-hidden="true" />
+            </button>
+            <div className="hidden lg:block">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span>控制台</span>
+                <span>/</span>
+                <span className="font-medium text-slate-700">{current?.label || "概览"}</span>
+              </div>
             </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">注册控制台</div>
-              <div className="truncate text-xs text-muted-foreground">{current?.label || "工作台"}</div>
+            <div className="min-w-0 lg:hidden">
+              <div className="truncate text-sm font-semibold text-slate-950">{current?.label || "工作台"}</div>
+              <div className="truncate text-[11px] text-slate-500">Grok Register</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <StatusPill running={jobRunning} compact />
-            {onLogout ? (
-              <button
-                type="button"
-                onClick={onLogout}
-                className="flex h-9 w-9 items-center justify-center rounded-lg border bg-card"
-                aria-label="退出登录"
-              >
-                <LogOut className="h-4 w-4" aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
-        </header>
-
-        <header className="sticky top-0 z-30 hidden min-h-16 items-center justify-between border-b bg-card/90 px-6 backdrop-blur lg:flex">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>工作台</span>
-            <span>/</span>
-            <span className="font-medium text-foreground">{current?.label || "仪表盘"}</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground">
-              <CircleDot className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-              SQLite 已连接
+            <div className="hidden items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-500 sm:flex">
+              <Activity className="h-3.5 w-3.5 text-sky-600" aria-hidden="true" />
+              服务正常
             </div>
-            <StatusPill running={jobRunning} />
             {onLogout ? (
               <button
                 type="button"
                 onClick={onLogout}
-                className="flex min-h-9 items-center gap-2 rounded-lg border bg-card px-3 text-xs font-medium hover:bg-muted"
+                className="hidden min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:flex"
               >
                 <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
                 退出
@@ -159,46 +215,85 @@ export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogou
 
         <main
           id="main-content"
-          className="mx-auto w-full max-w-[1920px] px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-6 lg:px-6 lg:pb-10 lg:pt-8"
+          className="w-full px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-6 lg:px-5 lg:pb-10 lg:pt-6 xl:px-6"
         >
           <Outlet />
         </main>
       </div>
 
+      {mobileMenuOpen ? (
+        <div className="fixed inset-0 z-[80] lg:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/35"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="关闭导航"
+          />
+          <aside className="absolute inset-y-0 left-0 flex w-[min(88vw,320px)] flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <Brand />
+              <button
+                type="button"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200"
+                onClick={() => setMobileMenuOpen(false)}
+                aria-label="关闭导航"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-5">
+              <NavigationContent onNavigate={() => setMobileMenuOpen(false)} />
+            </div>
+            {onLogout ? (
+              <div className="border-t border-slate-100 p-3">
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 text-sm font-medium"
+                >
+                  <LogOut className="h-4 w-4" aria-hidden="true" />
+                  退出登录
+                </button>
+              </div>
+            ) : null}
+          </aside>
+        </div>
+      ) : null}
+
       <nav
-        className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_30px_-20px_rgba(15,23,42,0.35)] backdrop-blur lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-slate-200 bg-white/96 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_-20px_rgba(15,23,42,0.3)] backdrop-blur lg:hidden"
         aria-label="手机端主导航"
       >
-        {nav.map((item) => {
+        {mobilePrimaryItems.map((item) => {
           const Icon = item.icon;
           return (
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to === "/"}
+              end={item.to === "/accounts"}
               className={({ isActive }) =>
                 cn(
-                  "relative flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition-colors",
-                  isActive ? "text-primary" : "text-muted-foreground active:bg-muted"
+                  "flex min-h-[62px] flex-col items-center justify-center gap-1 text-[11px] font-medium",
+                  isActive ? "text-sky-600" : "text-slate-500"
                 )
               }
             >
-              {({ isActive }) => (
-                <>
-                  <span
-                    className={cn(
-                      "flex h-8 min-w-12 items-center justify-center rounded-full transition-colors",
-                      isActive && "bg-blue-50"
-                    )}
-                  >
-                    <Icon className="h-5 w-5" aria-hidden="true" />
-                  </span>
-                  <span>{item.shortLabel}</span>
-                </>
-              )}
+              <Icon className="h-5 w-5" strokeWidth={1.8} aria-hidden="true" />
+              <span>{item.shortLabel}</span>
             </NavLink>
           );
         })}
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(true)}
+          className={cn(
+            "flex min-h-[62px] flex-col items-center justify-center gap-1 text-[11px] font-medium",
+            !primaryActive ? "text-sky-600" : "text-slate-500"
+          )}
+        >
+          <MoreHorizontal className="h-5 w-5" strokeWidth={1.8} aria-hidden="true" />
+          <span>更多</span>
+        </button>
       </nav>
     </div>
   );

@@ -55,7 +55,7 @@ for (const selector of selectors) {
     const rect = node.getBoundingClientRect();
     if (style.display === 'none' || style.visibility === 'hidden' || !rect.width || !rect.height) continue;
     const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text && text.length <= 300) return text;
+    if (text && text.length <= 300 && !['邮箱','密码','登录','Email','Password','Sign in','Log in'].includes(text)) return text;
   }
 }
 return '';
@@ -63,7 +63,56 @@ return '';
         )
     except Exception:
         return ""
-    return str(value or "").strip()
+    text = str(value or "").strip()
+    # 页面会把字段标题（例如“邮箱”）挂在 error class 上；它不是登录失败原因。
+    if text in {"邮箱", "密码", "登录", "Email", "Password", "Sign in", "Log in"}:
+        return ""
+    return text
+
+
+def capture_login_diagnostics() -> dict:
+    """读取登录失败现场的低敏诊断信息，不包含输入框值和密码。"""
+    diagnostics = {"url": "", "title": "", "visible_error": "", "page_text": "", "controls": ""}
+    try:
+        value = page.run_js(
+            r"""
+const visible = (node) => {
+  const style = getComputedStyle(node);
+  const rect = node.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+};
+const clean = (value, max = 1200) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+const errors = [];
+for (const selector of ['[role="alert"]','[aria-live="assertive"]','[aria-live="polite"]','[data-testid*="error" i]','[class*="error" i]']) {
+  for (const node of document.querySelectorAll(selector)) {
+    if (!visible(node)) continue;
+    const text = clean(node.innerText || node.textContent);
+    if (text && !['邮箱','密码','登录','Email','Password','Sign in','Log in'].includes(text) && !errors.includes(text)) errors.push(text);
+  }
+}
+const controls = [...document.querySelectorAll('input,button,[role="button"]')]
+  .filter(visible)
+  .map(node => {
+    const tag = node.tagName.toLowerCase();
+    const type = node.getAttribute('type') || '';
+    const label = node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.innerText || node.textContent || '';
+    const invalid = node.getAttribute('aria-invalid') || '';
+    return `${tag}${type ? `[${type}]` : ''}: ${clean(label, 180)}${invalid ? ` (invalid=${invalid})` : ''}`;
+  }).filter(Boolean).slice(0, 20).join(' | ');
+return {
+  url: String(location.href || ''),
+  title: clean(document.title, 200),
+  visible_error: errors.join(' | ').slice(0, 600),
+  page_text: clean(document.body && document.body.innerText, 1800),
+  controls,
+};
+"""
+        )
+        if isinstance(value, dict):
+            diagnostics.update({key: str(value.get(key) or "") for key in diagnostics})
+    except Exception:
+        pass
+    return diagnostics
 
 
 def _click_submit(keywords) -> bool:

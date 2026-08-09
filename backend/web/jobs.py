@@ -2,6 +2,7 @@
 """注册任务协调器。
 
 以单任务模型管理后台线程、停止信号、进度统计和有界日志队列。
+最近一次任务的 batch_id 与进度摘要会写入 SQLite，服务重启后可恢复。
 """
 from __future__ import annotations
 
@@ -34,11 +35,119 @@ class RegistrationJobCoordinator:
         self._failure_count = 0
         self._current_stage = "等待启动"
         self._current_email = ""
+        self._batch_id = ""
+        self._restored = False
+        self._last_persist_at = 0.0
+        self._last_persisted_completed = -1
 
-    def _update_progress_from_log(self, message: str) -> None:
+    def _repository(self):
+        try:
+            from backend.registration import engine as gr
+
+            return gr.get_registration_repository()
+        except Exception:
+            return None
+
+    def _snapshot_payload(self) -> Dict[str, Any]:
+        return {
+            "batch_id": self._batch_id,
+            "running": self._running,
+            "started_at": self._started_at,
+            "finished_at": self._finished_at,
+            "target_count": self._target_count,
+            "workers": self._workers,
+            "source": self._source,
+            "last_error": self._last_error,
+            "completed_count": self._completed_count,
+            "success_count": self._success_count,
+            "failure_count": self._failure_count,
+            "current_stage": self._current_stage,
+            "current_email": self._current_email,
+        }
+
+    def _persist_snapshot(self, *, force: bool = False) -> None:
+        """把当前任务摘要写入 SQLite；默认对进度变更做轻量节流。"""
+        now = time.time()
+        with self._lock:
+            completed = self._completed_count
+            if (
+                not force
+                and completed == self._last_persisted_completed
+                and (now - self._last_persist_at) < 1.0
+            ):
+                return
+            payload = self._snapshot_payload()
+            self._last_persist_at = now
+            self._last_persisted_completed = completed
+        repo = self._repository()
+        if repo is None:
+            return
+        try:
+            repo.save_job_snapshot(payload)
+        except Exception:
+            # 持久化失败不影响注册主流程
+            pass
+
+    def restore_from_database(self) -> None:
+        """进程启动后从 SQLite 恢复最近批次；不会恢复为 running。"""
+        with self._lock:
+            if self._restored:
+                return
+            self._restored = True
+        repo = self._repository()
+        if repo is None:
+            return
+        try:
+            snap = repo.get_job_snapshot() or {}
+        except Exception:
+            snap = {}
+
+        batch_id = str(snap.get("batch_id") or "").strip()
+        if not batch_id:
+            try:
+                batch_id = str(repo.latest_web_batch_id() or "").strip()
+            except Exception:
+                batch_id = ""
+
+        with self._lock:
+            if self._running:
+                return
+            if batch_id:
+                self._batch_id = batch_id
+            if snap:
+                self._started_at = snap.get("started_at")
+                self._finished_at = snap.get("finished_at")
+                self._target_count = int(snap.get("target_count") or 0)
+                self._workers = max(1, int(snap.get("workers") or 1))
+                self._source = str(snap.get("source") or "web")
+                self._last_error = str(snap.get("last_error") or "")
+                self._completed_count = int(snap.get("completed_count") or 0)
+                self._success_count = int(snap.get("success_count") or 0)
+                self._failure_count = int(snap.get("failure_count") or 0)
+                self._current_email = str(snap.get("current_email") or "")
+                was_running = bool(snap.get("running"))
+                stage = str(snap.get("current_stage") or "").strip()
+                if was_running:
+                    self._running = False
+                    if not self._finished_at:
+                        self._finished_at = time.time()
+                    self._current_stage = stage or "任务已中断（服务重启）"
+                    if not self._last_error:
+                        self._last_error = "服务重启，上次任务未正常收尾"
+                else:
+                    self._current_stage = stage or ("等待启动" if not batch_id else "最近任务已结束")
+            elif batch_id:
+                self._current_stage = "最近任务已结束"
+
+        # 若快照标记仍在 running，写回为已中断，避免下次启动重复提示逻辑混乱
+        if snap and snap.get("running"):
+            self._persist_snapshot(force=True)
+
+    def _update_progress_from_log(self, message: str) -> bool:
+        """根据日志更新进度；返回 completed_count 是否变化。"""
         text = str(message or "").strip()
         if not text:
-            return
+            return False
 
         stage_rules = (
             ("打开注册页", "打开注册页"),
@@ -51,7 +160,9 @@ class RegistrationJobCoordinator:
             ("[CPA]", "写入 CPA 授权"),
             ("下一个账号前等待", "等待下一账号"),
         )
+        changed = False
         with self._lock:
+            before = self._completed_count
             for marker, label in stage_rules:
                 if marker in text:
                     self._current_stage = label
@@ -94,10 +205,12 @@ class RegistrationJobCoordinator:
                     if self._completed_count >= self._target_count
                     else f"准备第 {self._completed_count + 1} 个账号"
                 )
+            changed = self._completed_count != before
+        return changed
 
     def _append_log(self, message: str) -> None:
         text = str(message or "")
-        self._update_progress_from_log(text)
+        progress_changed = self._update_progress_from_log(text)
         with self._lock:
             self._log_seq += 1
             self._logs.append(
@@ -107,8 +220,11 @@ class RegistrationJobCoordinator:
                     "message": text,
                 }
             )
+        if progress_changed:
+            self._persist_snapshot(force=True)
 
     def status(self) -> Dict[str, Any]:
+        self.restore_from_database()
         with self._lock:
             return {
                 "running": self._running,
@@ -131,6 +247,7 @@ class RegistrationJobCoordinator:
                 ),
                 "current_stage": self._current_stage,
                 "current_email": self._current_email,
+                "batch_id": self._batch_id,
             }
 
     def get_logs(self, after_id: int = 0, limit: int = 500) -> List[Dict[str, Any]]:
@@ -149,6 +266,7 @@ class RegistrationJobCoordinator:
     def start(self, count: int = 1, workers: int = 1) -> Dict[str, Any]:
         from backend.registration import engine as gr
 
+        self.restore_from_database()
         gr._bs.allow_browser_launches()
         count = max(1, min(int(count or 1), 1000))
         workers = max(1, min(int(workers or 1), 8, count))
@@ -169,7 +287,10 @@ class RegistrationJobCoordinator:
             self._failure_count = 0
             self._current_stage = "任务启动中"
             self._current_email = ""
+            self._batch_id = ""
             self._append_log(f"[*] Web 任务启动：数量={count} 并发={workers}")
+
+        self._persist_snapshot(force=True)
 
         manager = self
 
@@ -216,7 +337,21 @@ class RegistrationJobCoordinator:
                 gr.registration_log = web_registration_log
                 gr.RegistrationStopController = WebStopController
 
-                gr.run_registration(count_local)
+                original_new_batch_id = gr.new_registration_batch_id
+
+                def capture_batch_id(source="web"):
+                    batch_id = original_new_batch_id(source)
+                    with manager._lock:
+                        manager._batch_id = str(batch_id or "")
+                    manager._append_log(f"[*] 任务批次: {batch_id}")
+                    manager._persist_snapshot(force=True)
+                    return batch_id
+
+                gr.new_registration_batch_id = capture_batch_id
+                try:
+                    gr.run_registration(count_local)
+                finally:
+                    gr.new_registration_batch_id = original_new_batch_id
             except Exception as exc:
                 with manager._lock:
                     manager._last_error = str(exc)
@@ -237,6 +372,7 @@ class RegistrationJobCoordinator:
                         else "任务已完成"
                     )
                 manager._append_log("[*] Web 任务已结束")
+                manager._persist_snapshot(force=True)
 
         self._thread = threading.Thread(target=runner, name="web-registration", daemon=True)
         self._thread.start()
@@ -259,6 +395,7 @@ class RegistrationJobCoordinator:
         except Exception as exc:
             self._append_log(f"[!] 停止失败: {exc}")
             raise
+        self._persist_snapshot(force=True)
         return self.status()
 
     def stop(self) -> Dict[str, Any]:

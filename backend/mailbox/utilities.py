@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import secrets
 import string
+from email import message_from_string
+from email.header import decode_header, make_header
 from typing import Any, List, Optional
 
 
@@ -60,6 +62,74 @@ def strip_html(html: str) -> str:
     cleaned = _SCRIPT_STYLE_RE.sub(" ", html)
     cleaned = _COMMENT_RE.sub(" ", cleaned)
     return _TAG_RE.sub(" ", cleaned)
+
+
+def looks_like_raw_email(value: str) -> bool:
+    """粗判是否为 RFC822 原文：开头若干行里出现邮件头即认为是。"""
+    if not value:
+        return False
+    for line in value.lstrip().splitlines()[:12]:
+        if not line.strip():
+            break
+        if re.match(r"^[A-Za-z\-]{2,40}:\s", line):
+            return True
+    return False
+
+
+def _decode_mime_header(value: str) -> str:
+    """解 RFC2047 编码字（=?UTF-8?B?...?=）；失败时原样返回。"""
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
+
+
+def parse_raw_email(raw: str) -> dict:
+    """把 RFC822 原文解成 {"subject", "text"}。
+
+    cloudflare_temp_email 的 /api/mails、/admin/mails 按设计只回原始 MIME，
+    不保证带已解析的 subject/text/html。直接对原文跑验证码正则会漏：
+    base64 正文整段是乱码，quoted-printable 的软换行（I6R=\\n-B2W）会把
+    验证码劈成两半，主题还可能是 =?UTF-8?B?...?= 编码字。
+    """
+    if not raw:
+        return {"subject": "", "text": ""}
+    try:
+        message = message_from_string(raw)
+    except Exception:
+        return {"subject": "", "text": raw}
+
+    subject = _decode_mime_header(str(message.get("Subject", "") or ""))
+    chunks: List[str] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        content_type = (part.get_content_type() or "").lower()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            payload = None
+        if payload is None:
+            raw_payload = part.get_payload()
+            body = raw_payload if isinstance(raw_payload, str) else ""
+        else:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                body = payload.decode(charset, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                body = payload.decode("utf-8", errors="replace")
+        if not body.strip():
+            continue
+        chunks.append(strip_html(body) if content_type == "text/html" else body)
+
+    if not chunks:
+        # 没有可识别的 text/* part（如整封就是裸正文），退回原文，避免丢内容。
+        return {"subject": subject, "text": raw}
+    return {"subject": subject, "text": "\n".join(chunks)}
 
 
 def _match_code(pattern: re.Pattern, source: str) -> Optional[str]:

@@ -19,7 +19,11 @@ class Grok2APIClient:
     LOGIN_PATH = "/api/admin/v1/auth/login"
     ACCOUNTS_PATH = "/api/admin/v1/accounts"
     IMPORT_PATH = "/api/admin/v1/accounts/import"
-    WEB_IMPORT_PATH = "/api/admin/v1/accounts/web/import"
+    IMPORT_PATHS = {
+        "grok_build": "/api/admin/v1/accounts/import",
+        "grok_web": "/api/admin/v1/accounts/web/import",
+        "grok_console": "/api/admin/v1/accounts/console/import",
+    }
     CONFIG_KEYS = (
         "grok2api_remote_url",
         "grok2api_remote_username",
@@ -178,11 +182,18 @@ class Grok2APIClient:
         self._access_token = token
         return token
 
-    def import_auth_file(self, file_path: str | Path, *, web_sso: str = "") -> Dict[str, Any]:
-        """自动登录并将一个 grok_build JSON 导入远程管理端。
-
-        如果提供 web_sso，则同时上传 grok-web-sso-tokens.txt 作为 side file。
-        """
+    def import_auth_file(
+        self,
+        file_path: str | Path,
+        format_name: str = "grok_build",
+    ) -> Dict[str, Any]:
+        """自动登录并将一个 grok_build JSON 导入远程管理端。"""
+        normalized_format = str(format_name or "").strip().lower() or "grok_build"
+        import_path = self.IMPORT_PATHS.get(normalized_format)
+        if not import_path:
+            raise Grok2APIImportError(
+                "Grok2API import format must be grok_build, grok_web, or grok_console"
+            )
         path, content = self._load_auth_document(file_path)
         token = self.login()
         multipart = CurlMime()
@@ -213,7 +224,7 @@ class Grok2APIClient:
             }
             try:
                 response = self.session.post(
-                    f"{self.base_url}{self.IMPORT_PATH}", **request_kwargs
+                    f"{self.base_url}{import_path}", **request_kwargs
                 )
             except TypeError as exc:
                 if "multipart" not in str(exc):
@@ -223,7 +234,7 @@ class Grok2APIClient:
                     "files": (path.name, content, "application/json")
                 }
                 response = self.session.post(
-                    f"{self.base_url}{self.IMPORT_PATH}", **request_kwargs
+                    f"{self.base_url}{import_path}", **request_kwargs
                 )
         except Exception as exc:
             raise Grok2APIImportError(f"连接 Grok2API 导入接口失败: {exc}") from exc

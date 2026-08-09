@@ -6,15 +6,15 @@
 
 ## 界面预览
 
-### 仪表盘
+### 工作概览
 
-![Grok Register 仪表盘](docs/images/dashboard.png)
+![Grok Register 工作概览](docs/images/dashboard.png)
 
-### 注册台与账号管理
+### 注册、监控与账号
 
-| 启动注册 | 账号管理 |
-| --- | --- |
-| ![启动注册页面](docs/images/register.png) | ![账号管理页面](docs/images/accounts.png) |
+| 新建注册 | 运行监控 | 账号列表 |
+| --- | --- | --- |
+| ![新建注册页面](docs/images/register.png) | ![运行监控页面](docs/images/runtime.png) | ![账号管理页面](docs/images/accounts.png) |
 
 ## 功能
 

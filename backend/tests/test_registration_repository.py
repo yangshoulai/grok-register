@@ -57,7 +57,9 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(registration_results)")}
                 version = conn.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 6)
+            self.assertIn("bot_risk", columns)
+            self.assertIn("bfs", columns)
             self.assertTrue(
                 {
                     "email_account_id",
@@ -153,6 +155,31 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
             self.assertEqual([row["id"] for row in records], [1, 2, 3, 4, 5])
             self.assertEqual(len(store.delete_results(range(1, 1006))), 5)
             self.assertEqual(store.count_results(), 0)
+
+    def test_bot_risk_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            store.add_result(
+                {
+                    "email": "risk@example.com",
+                    "status": "success",
+                    "bot_risk": True,
+                    "bfs": 1,
+                }
+            )
+            store.add_result(
+                {
+                    "email": "safe@example.com",
+                    "status": "success",
+                    "bot_risk": False,
+                }
+            )
+            risk_rows = store.list_results(bot_risk="1")
+            self.assertEqual([row["email"] for row in risk_rows], ["risk@example.com"])
+            self.assertEqual(store.count_results(bot_risk="risk"), 1)
+            safe_rows = store.list_results(bot_risk="0")
+            self.assertEqual([row["email"] for row in safe_rows], ["safe@example.com"])
+            self.assertEqual(store.count_results(bot_risk="normal"), 1)
 
 
 if __name__ == "__main__":

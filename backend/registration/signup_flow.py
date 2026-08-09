@@ -789,11 +789,11 @@ def fill_email_and_submit(timeout=45, log_callback=None, cancel_callback=None):
             break
         if log_callback:
             log_callback(
-                f"[*] 邮箱已有注册成功记录，已跳过并获取下一个 ({candidate_index}/50): {email}"
+                f"[*] 邮箱已注册或已消耗，已跳过并获取下一个 ({candidate_index}/50): {email}"
             )
         raise_if_cancelled(cancel_callback)
     else:
-        raise Exception("连续获取到已注册成功邮箱，已达到更换上限")
+        raise Exception("连续获取到已注册/已消耗邮箱，已达到更换上限；这不是邮箱池为空，请补充新邮箱或停用已占用账号")
     if log_callback:
         log_callback(f"[*] 已创建邮箱: {email}")
     deadline = time.time() + timeout

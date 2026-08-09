@@ -50,6 +50,8 @@ RESULT_COLUMNS = (
     "account_file",
     "sso_saved",
     "nsfw_status",
+    "bot_risk",
+    "bfs",
     "extra_json",
 )
 
@@ -122,6 +124,8 @@ class RegistrationRepository:
                     account_file TEXT NOT NULL DEFAULT '',
                     sso_saved INTEGER NOT NULL DEFAULT 0,
                     nsfw_status TEXT NOT NULL DEFAULT '',
+                    bot_risk INTEGER NOT NULL DEFAULT 0,
+                    bfs TEXT NOT NULL DEFAULT '',
                     extra_json TEXT NOT NULL DEFAULT '{}'
                 );
 
@@ -153,6 +157,8 @@ class RegistrationRepository:
                 "grok2api_remote_status": "TEXT NOT NULL DEFAULT 'not_configured'",
                 "grok2api_remote_imported_at": "TEXT NOT NULL DEFAULT ''",
                 "grok2api_remote_error": "TEXT NOT NULL DEFAULT ''",
+                "bot_risk": "INTEGER NOT NULL DEFAULT 0",
+                "bfs": "TEXT NOT NULL DEFAULT ''",
             }
             for column, definition in migrations.items():
                 if column not in existing_columns:
@@ -182,6 +188,37 @@ class RegistrationRepository:
                 """
             )
             conn.execute("PRAGMA user_version = 4")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS registration_job_snapshot (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    batch_id TEXT NOT NULL DEFAULT '',
+                    running INTEGER NOT NULL DEFAULT 0,
+                    started_at REAL,
+                    finished_at REAL,
+                    target_count INTEGER NOT NULL DEFAULT 0,
+                    workers INTEGER NOT NULL DEFAULT 1,
+                    source TEXT NOT NULL DEFAULT 'web',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    completed_count INTEGER NOT NULL DEFAULT 0,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    current_stage TEXT NOT NULL DEFAULT '',
+                    current_email TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            # 单行快照：没有则插入空行
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO registration_job_snapshot (id, updated_at)
+                VALUES (1, ?)
+                """,
+                (self.now_text(),),
+            )
+            conn.execute("PRAGMA user_version = 6")
 
     def add_result(self, record: Dict[str, Any]) -> int:
         now = self.now_text()
@@ -234,6 +271,8 @@ class RegistrationRepository:
             "account_file": str(record.get("account_file") or ""),
             "sso_saved": 1 if bool(record.get("sso_saved")) else 0,
             "nsfw_status": str(record.get("nsfw_status") or ""),
+            "bot_risk": 1 if bool(record.get("bot_risk")) else 0,
+            "bfs": "" if record.get("bfs") is None else str(record.get("bfs")),
             "extra_json": extra_json,
         }
         columns = ", ".join(RESULT_COLUMNS)
@@ -261,12 +300,37 @@ class RegistrationRepository:
             ).fetchone()
         return row is not None
 
+    def has_registered_or_consumed(self, email: str) -> bool:
+        """成功、已保存 SSO，或已判定账号已注册的邮箱，都应避免再次取用。"""
+        normalized = str(email or "").strip()
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM registration_results
+                WHERE email = ? COLLATE NOCASE
+                  AND (
+                    success = 1
+                    OR sso_saved = 1
+                    OR lower(coalesce(failure_type, '')) = 'already_registered'
+                    OR lower(coalesce(email_disable_status, '')) IN ('success', 'failed')
+                  )
+                LIMIT 1
+                """,
+                (normalized,),
+            ).fetchone()
+        return row is not None
+
     @staticmethod
     def _result_filters(
         *,
         status: str = "",
         email_disable_status: str = "",
         keyword: str = "",
+        batch_id: str = "",
+        bot_risk: str = "",
     ) -> Tuple[str, List[Any]]:
         clauses = []
         params: List[Any] = []
@@ -278,6 +342,15 @@ class RegistrationRepository:
         if normalized_disable_status:
             clauses.append("email_disable_status = ?")
             params.append(normalized_disable_status)
+        normalized_batch_id = str(batch_id or "").strip()
+        if normalized_batch_id:
+            clauses.append("batch_id = ?")
+            params.append(normalized_batch_id)
+        normalized_bot_risk = str(bot_risk or "").strip().lower()
+        if normalized_bot_risk in {"1", "true", "yes", "risk", "bot", "bot_risk"}:
+            clauses.append("bot_risk = 1")
+        elif normalized_bot_risk in {"0", "false", "no", "normal", "safe"}:
+            clauses.append("COALESCE(bot_risk, 0) = 0")
         normalized_keyword = str(keyword or "").strip()
         if normalized_keyword:
             like = f"%{normalized_keyword}%"
@@ -295,6 +368,8 @@ class RegistrationRepository:
         status: str = "",
         email_disable_status: str = "",
         keyword: str = "",
+        batch_id: str = "",
+        bot_risk: str = "",
         limit: int = 2000,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -302,6 +377,8 @@ class RegistrationRepository:
             status=status,
             email_disable_status=email_disable_status,
             keyword=keyword,
+            batch_id=batch_id,
+            bot_risk=bot_risk,
         )
         safe_limit = max(1, min(int(limit or 2000), 10000))
         safe_offset = max(0, int(offset or 0))
@@ -325,12 +402,16 @@ class RegistrationRepository:
         status: str = "",
         email_disable_status: str = "",
         keyword: str = "",
+        batch_id: str = "",
+        bot_risk: str = "",
     ) -> int:
         """返回与账号列表相同筛选条件下的记录总数。"""
         where, params = self._result_filters(
             status=status,
             email_disable_status=email_disable_status,
             keyword=keyword,
+            batch_id=batch_id,
+            bot_risk=bot_risk,
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -379,6 +460,7 @@ class RegistrationRepository:
         status: str = "success",
         error: str = "",
         screenshot_path: str = "",
+        diagnostics: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """记录重新登录结果，并在成功时刷新授权文件路径。"""
         try:
@@ -410,6 +492,8 @@ class RegistrationRepository:
                     "relogin_error": str(error or ""),
                 }
             )
+            if diagnostics:
+                extra["relogin_diagnostics"] = dict(diagnostics)
             values: Dict[str, Any] = {
                 "extra_json": json.dumps(extra, ensure_ascii=False, sort_keys=True),
                 "id": normalized_id,
@@ -447,6 +531,12 @@ class RegistrationRepository:
                         ),
                         "grok2api_remote_error": str(
                             detail.get("grok2api_remote_error") or ""
+                        ),
+                        "bot_risk": 1 if bool(detail.get("bot_risk")) else 0,
+                        "bfs": (
+                            ""
+                            if detail.get("bfs") is None
+                            else str(detail.get("bfs"))
                         ),
                     }
                 )
@@ -492,6 +582,8 @@ class RegistrationRepository:
                         "grok2api_remote_status = :grok2api_remote_status",
                         "grok2api_remote_imported_at = :grok2api_remote_imported_at",
                         "grok2api_remote_error = :grok2api_remote_error",
+                        "bot_risk = :bot_risk",
+                        "bfs = :bfs",
                     ]
                 )
                 if relogin_status == "success" and not screenshot_path:
@@ -501,6 +593,48 @@ class RegistrationRepository:
                 values,
             )
             return bool(cursor.rowcount)
+
+    def update_bot_risk_by_email(
+        self,
+        email: str,
+        *,
+        bot_risk: bool,
+        bfs: Any = None,
+    ) -> int:
+        """按邮箱回填 access_token 上的 bfs / bot_risk 标记。"""
+        normalized = str(email or "").strip()
+        if not normalized:
+            return 0
+        bfs_text = "" if bfs is None else str(bfs)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE registration_results
+                SET bot_risk = ?, bfs = ?
+                WHERE email = ? COLLATE NOCASE
+                """,
+                (1 if bot_risk else 0, bfs_text, normalized),
+            )
+            return int(cursor.rowcount or 0)
+
+    def backfill_registration_risk_bot_risk(self) -> int:
+        """把历史 registration_risk 失败记录补上 bot_risk 标记。
+
+        只认 failure_reason 里带 botFlagSource 的行——那是服务端真正下了风控裁决
+        的记录。registration_risk 也覆盖"sso 为空"这类前置条件失败，那些不是
+        机器人标记，不能一并标上。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE registration_results
+                SET bot_risk = 1
+                WHERE failure_type = 'registration_risk'
+                  AND COALESCE(bot_risk, 0) = 0
+                  AND failure_reason LIKE '%botFlagSource%'
+                """
+            )
+            return int(cursor.rowcount or 0)
 
     def update_remote_import_status(
         self,
@@ -639,3 +773,80 @@ class RegistrationRepository:
                 except (OSError, sqlite3.IntegrityError, ValueError):
                     continue
         return imported
+
+    def get_job_snapshot(self) -> Dict[str, Any]:
+        """读取最近一次 Web 注册任务快照（单行）。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM registration_job_snapshot WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return {}
+        data = dict(row)
+        data["running"] = bool(data.get("running"))
+        return data
+
+    def save_job_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """持久化最近一次 Web 注册任务快照，供服务重启后恢复批次与进度摘要。"""
+        now = self.now_text()
+        payload = {
+            "batch_id": str(snapshot.get("batch_id") or ""),
+            "running": 1 if snapshot.get("running") else 0,
+            "started_at": snapshot.get("started_at"),
+            "finished_at": snapshot.get("finished_at"),
+            "target_count": int(snapshot.get("target_count") or 0),
+            "workers": int(snapshot.get("workers") or 1),
+            "source": str(snapshot.get("source") or "web"),
+            "last_error": str(snapshot.get("last_error") or ""),
+            "completed_count": int(snapshot.get("completed_count") or 0),
+            "success_count": int(snapshot.get("success_count") or 0),
+            "failure_count": int(snapshot.get("failure_count") or 0),
+            "current_stage": str(snapshot.get("current_stage") or ""),
+            "current_email": str(snapshot.get("current_email") or ""),
+            "updated_at": now,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO registration_job_snapshot (
+                    id, batch_id, running, started_at, finished_at, target_count, workers,
+                    source, last_error, completed_count, success_count, failure_count,
+                    current_stage, current_email, updated_at
+                ) VALUES (
+                    1, :batch_id, :running, :started_at, :finished_at, :target_count, :workers,
+                    :source, :last_error, :completed_count, :success_count, :failure_count,
+                    :current_stage, :current_email, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    batch_id = excluded.batch_id,
+                    running = excluded.running,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    target_count = excluded.target_count,
+                    workers = excluded.workers,
+                    source = excluded.source,
+                    last_error = excluded.last_error,
+                    completed_count = excluded.completed_count,
+                    success_count = excluded.success_count,
+                    failure_count = excluded.failure_count,
+                    current_stage = excluded.current_stage,
+                    current_email = excluded.current_email,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+
+    def latest_web_batch_id(self) -> str:
+        """回退：从结果表推断最近一个非空 web 批次号。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT batch_id
+                FROM registration_results
+                WHERE batch_id IS NOT NULL AND trim(batch_id) != ''
+                  AND batch_id NOT IN ('legacy-import')
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return str(row["batch_id"] if row else "") or ""

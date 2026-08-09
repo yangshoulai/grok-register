@@ -4,14 +4,17 @@ import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 from fastapi import HTTPException
 
-from backend.web.account_exports import build_account_auth_archive
+from backend.web.account_exports import build_account_auth_archive, build_sso_archive, read_sso_token
+from backend.web import application
 from backend.web.application import (
     MAX_BATCH_ACCOUNT_IDS,
     _batch_account_ids,
     _find_account_auth_file,
+    _find_account_sso_file,
     _load_account_auth_json,
     _stream_file,
 )
@@ -100,6 +103,37 @@ class WebAuthJsonTests(unittest.TestCase):
                 self.assertEqual(archive.namelist(), ["7-xai-user@example.com.json"])
                 payload = json.loads(archive.read(archive.namelist()[0]))
                 self.assertEqual(payload["email"], "user@example.com")
+
+    def test_sso_export_only_contains_token_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            account_file = root / "user@example.com.txt"
+            token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.fixture.signature"
+            account_file.write_text(f"user@example.com----password-value----{token}\n", encoding="utf-8")
+            self.assertEqual(read_sso_token(account_file), token)
+            content, exported, skipped = build_sso_archive(
+                [{"id": 9, "email": "user@example.com", "account_file": str(account_file)}],
+                lambda record: Path(str(record["account_file"])),
+            )
+            self.assertEqual((exported, skipped), (1, 0))
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                self.assertEqual(archive.namelist(), ["9-user@example.com.sso.txt"])
+                self.assertEqual(archive.read(archive.namelist()[0]).decode().strip(), token)
+
+    def test_sso_file_finder_stays_inside_data_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(application, "DATA_DIR", Path(tmp)):
+            root = Path(tmp) / "accounts"
+            root.mkdir()
+            account_file = root / "user@example.com.txt"
+            account_file.write_text("email----password----token", encoding="utf-8")
+            self.assertEqual(
+                _find_account_sso_file({"email": "user@example.com", "account_file": str(account_file)}),
+                account_file.resolve(),
+            )
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("email----password----token", encoding="utf-8")
+            with self.assertRaises(FileNotFoundError):
+                _find_account_sso_file({"account_file": str(outside)})
 
 
 if __name__ == "__main__":

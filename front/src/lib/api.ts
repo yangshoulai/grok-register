@@ -14,6 +14,7 @@ export type JobStatus = {
   progress_percent: number;
   current_stage: string;
   current_email: string;
+  batch_id?: string;
 };
 
 export type AccountRecord = {
@@ -31,6 +32,7 @@ export type AccountRecord = {
   grok2api_auth_path: string;
   cpa_auth_available: boolean;
   grok2api_auth_available: boolean;
+  sso_available: boolean;
   cpa_remote_status: string;
   cpa_remote_imported_at: string;
   cpa_remote_error: string;
@@ -58,6 +60,8 @@ export type AccountRecord = {
   source: string;
   worker_id: number;
   sso_saved: boolean;
+  bot_risk?: boolean;
+  bfs?: string | number | null;
   extra?: Record<string, unknown>;
 };
 
@@ -91,6 +95,26 @@ export type AuthState = {
   username: string;
 };
 
+export type ReloginItemStatus = "pending" | "success" | "failed";
+
+export type ReloginItem = {
+  account_id: number;
+  email: string;
+  status: ReloginItemStatus;
+  error: string;
+  stage?: string;
+  error_type?: string;
+  url?: string;
+  page_title?: string;
+  visible_error?: string;
+  page_text?: string;
+  controls?: string;
+  screenshot_url?: string;
+  screenshot_name?: string;
+  captured_at?: string;
+  traceback?: string;
+};
+
 export type ReloginStatus = {
   running: boolean;
   account_id: number;
@@ -103,6 +127,8 @@ export type ReloginStatus = {
   completed_count: number;
   success_count: number;
   failed_count: number;
+  run_id: string;
+  items: ReloginItem[];
 };
 
 export type AuthArchiveDownload = {
@@ -111,6 +137,8 @@ export type AuthArchiveDownload = {
   exported: number;
   skipped: number;
 };
+
+export type AuthKind = "cpa" | "grok2api" | "sso";
 
 export type ConfigFileSnapshot = {
   path: string;
@@ -153,7 +181,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function downloadAuthArchive(
   ids: number[],
-  kind: "cpa" | "grok2api"
+  kind: AuthKind
 ): Promise<AuthArchiveDownload> {
   const response = await fetch(`/api/accounts/auth-json/${kind}/download`, {
     method: "POST",
@@ -200,12 +228,22 @@ export const api = {
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   stats: () => request<{ ok: boolean; stats: Stats; job: JobStatus }>("/api/stats"),
   accounts: (
-    params: { status?: string; emailDisableStatus?: string; q?: string; limit?: number; offset?: number } = {}
+    params: {
+      status?: string;
+      emailDisableStatus?: string;
+      q?: string;
+      batchId?: string;
+      botRisk?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
   ) => {
     const sp = new URLSearchParams();
     if (params.status) sp.set("status", params.status);
     if (params.emailDisableStatus) sp.set("email_disable_status", params.emailDisableStatus);
     if (params.q) sp.set("q", params.q);
+    if (params.batchId) sp.set("batch_id", params.batchId);
+    if (params.botRisk) sp.set("bot_risk", params.botRisk);
     if (params.limit) sp.set("limit", String(params.limit));
     if (params.offset) sp.set("offset", String(params.offset));
     const qs = sp.toString();
@@ -222,11 +260,11 @@ export const api = {
     );
   },
   account: (id: number) => request<{ ok: boolean; item: AccountRecord }>(`/api/accounts/${id}`),
-  accountAuthJson: (id: number, kind: "cpa" | "grok2api") =>
-    request<{ ok: boolean; kind: "cpa" | "grok2api"; path: string; content: string }>(
+  accountAuthJson: (id: number, kind: AuthKind) =>
+    request<{ ok: boolean; kind: AuthKind; path: string; content: string }>(
       `/api/accounts/${id}/auth-json/${kind}`
     ),
-  accountAuthDownloadUrl: (id: number, kind: "cpa" | "grok2api") =>
+  accountAuthDownloadUrl: (id: number, kind: AuthKind) =>
     `/api/accounts/${id}/auth-json/${kind}/download`,
   downloadAuthArchive,
   startRelogin: (id: number) =>

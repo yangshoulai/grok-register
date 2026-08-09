@@ -1,21 +1,19 @@
 import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
+  ArrowRight,
   Cloud,
-  Copy,
-  Eye,
-  EyeOff,
-  FileJson,
+  HelpCircle,
   Mail,
   RefreshCw,
   Save,
   Settings2,
   ShieldCheck,
-  X,
 } from "lucide-react";
-import { api, type ConfigFileSnapshot } from "@/lib/api";
-import { copyText } from "@/lib/utils";
+import { api } from "@/lib/api";
 import {
   Button,
+  buttonVariants,
   Card,
   CardContent,
   CardDescription,
@@ -61,12 +59,15 @@ const PROVIDERS = [
     description: "适合自建 cloud-mail，需要站点地址、管理员账号和域名。",
   },
 ];
-const SETTINGS_SECTIONS = [
-  { value: "basic", label: "基础注册", description: "服务商、代理、并发与浏览器" },
-  { value: "cpa", label: "CPA / Auth", description: "Token、目录与远程入库" },
-  { value: "providers", label: "邮箱服务", description: "各邮箱服务商的凭证" },
-  { value: "outlook", label: "Outlook 邮箱池", description: "账号池、临时邮箱与停用" },
-];
+export type SettingsSection = "registration" | "cpa" | "grok2api" | "mail" | "outlook";
+
+const SECTION_META: Record<SettingsSection, { title: string; description: string }> = {
+  registration: { title: "注册设置", description: "注册数量、代理、浏览器语言与运行方式。" },
+  cpa: { title: "CPA / Auth", description: "配置 SSO 授权转换、Token 模式与 CPA 入库目标。" },
+  grok2api: { title: "Grok2API", description: "维护本地授权目录、远程管理端与自动导入。" },
+  mail: { title: "邮箱服务", description: "选择邮箱服务商并维护对应接口与访问凭据。" },
+  outlook: { title: "Outlook 邮箱池", description: "配置账号池来源、分组、邮件读取与自动停用。" },
+};
 const TOKEN_MODES = [
   { value: "device_protocol", label: "协议 Device Flow" },
   { value: "device_browser", label: "浏览器 Device Flow" },
@@ -112,7 +113,7 @@ function ToggleRow({
 
 function SectionIcon({ children }: { children: React.ReactNode }) {
   return (
-    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-primary">
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600">
       {children}
     </span>
   );
@@ -159,16 +160,106 @@ function ConfigField({
   );
 }
 
-export function SettingsPage() {
+function HelpRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid gap-0.5 sm:grid-cols-[9rem_1fr] sm:gap-3">
+      <div className="font-medium text-slate-700">{label}</div>
+      <div className="text-slate-600">{children}</div>
+    </div>
+  );
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-800">
+      {children}
+    </code>
+  );
+}
+
+function CloudflareHelp() {
+  return (
+    <details className="group sm:col-span-2 rounded-xl border border-sky-100 bg-sky-50/60 p-3 sm:p-4">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-slate-900">
+        <HelpCircle className="h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />
+        配置帮助：cloudflare_temp_email 怎么填
+        <span className="ml-auto text-xs font-normal text-slate-500 group-open:hidden">展开</span>
+        <span className="ml-auto hidden text-xs font-normal text-slate-500 group-open:inline">收起</span>
+      </summary>
+
+      <div className="mt-3 space-y-3 text-xs leading-6">
+        <p className="text-slate-600">
+          下面按 <span className="font-medium">dreamhunter2333/cloudflare_temp_email</span> 自建 Worker 的官方文档说明。
+          本项目走 admin 建号 + 地址 JWT 收信这一条链路。
+        </p>
+
+        <div className="space-y-2 rounded-lg bg-white/70 p-3">
+          <HelpRow label="接口地址">
+            Worker 根域名，如 <Code>https://mail.example.com</Code>。
+            只填根地址，<span className="font-medium">不要</span>带 <Code>/api</Code> 或结尾斜杠。
+          </HelpRow>
+          <HelpRow label="API Key / 管理员密码">
+            填后台的 <Code>ADMIN_PASSWORDS</Code>（管理员密码），会作为 <Code>x-admin-auth</Code> 发出。
+            不是站点访问密码，也不是邮箱 JWT。
+          </HelpRow>
+          <HelpRow label="鉴权方式">
+            选<span className="font-medium">「管理员密码 X-Admin-Auth」</span>。
+            建号端点只认这个头；留成「无需鉴权」时只要填了密码也会自动补上，但显式选中更清楚。
+          </HelpRow>
+          <HelpRow label="全局访问密码">
+            仅当 Worker 配了 <Code>PASSWORDS</Code>（整站私有密码）才填，对应 <Code>x-custom-auth</Code>。
+            没开私有站点就留空。
+          </HelpRow>
+          <HelpRow label="收信域名">
+            必须是后台 <Code>DOMAINS</Code> / <Code>DEFAULT_DOMAINS</Code> 里已存在的域名，只填域名本身（
+            <Code>example.com</Code>），不带 <Code>@</Code>。多个用逗号分隔，会轮流使用。
+          </HelpRow>
+        </div>
+
+        <div className="space-y-2 rounded-lg bg-white/70 p-3">
+          <div className="font-medium text-slate-700">四个接口路径（默认值一般不用改）</div>
+          <HelpRow label="创建邮箱">
+            <Code>/admin/new_address</Code> — 官方 admin 建号接口，返回 <Code>address</Code> 和 <Code>jwt</Code>。
+          </HelpRow>
+          <HelpRow label="邮件列表">
+            <Code>/api/mails</Code> — 用上一步的地址 JWT 以 <Code>Bearer</Code> 拉取。
+            该接口只回原始 MIME，本项目会在本地解码后再提验证码。
+            新版 Worker 若有 <Code>/api/parsed_mails</Code>（服务端已解析）也可以填，两种都兼容。
+          </HelpRow>
+          <HelpRow label="域名 / Token">
+            <Code>/api/domains</Code>、<Code>/api/token</Code> 只给非 cloudflare_temp_email 的旧版兼容回退用。
+            自建 cloudflare_temp_email 时这两项用不到，保持默认即可，填错也不影响正常流程。
+          </HelpRow>
+        </div>
+
+        <div className="space-y-2 rounded-lg bg-white/70 p-3">
+          <div className="font-medium text-slate-700">配置错了通常是这几种</div>
+          <HelpRow label="401 / 403">
+            管理员密码不对，或鉴权方式没选 X-Admin-Auth；开了私有站点却没填全局访问密码。
+          </HelpRow>
+          <HelpRow label="404">
+            接口地址多带了 <Code>/api</Code>，或创建邮箱路径被改成了别的值。
+          </HelpRow>
+          <HelpRow label="建号成功但收不到码">
+            邮件列表路径填错，或收信域名不在后台允许列表里（邮件根本没投递进来）。
+          </HelpRow>
+          <HelpRow label="域名相关报错">
+            收信域名带了 <Code>@</Code>，或该域名没在 Worker 后台配置过。
+          </HelpRow>
+          <p className="text-slate-500">
+            填完可以用页面上的连通性检查验证；它探的是建号端点，能区分「鉴权失败」和「服务不可达」。
+          </p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+export function SettingsPage({ section = "registration" }: { section?: SettingsSection }) {
+  const [searchParams] = useSearchParams();
   const [config, setConfig] = useState<Record<string, any>>({});
-  const [activeSection, setActiveSection] = useState("basic");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [configFileOpen, setConfigFileOpen] = useState(false);
-  const [configFileLoading, setConfigFileLoading] = useState(false);
-  const [configFile, setConfigFile] = useState<ConfigFileSnapshot | null>(null);
-  const [configFileError, setConfigFileError] = useState("");
-  const [showConfigSecrets, setShowConfigSecrets] = useState(true);
   const [toast, setToast] = useState<{ message: string; tone?: "default" | "success" | "error" }>({
     message: "",
   });
@@ -182,7 +273,9 @@ export function SettingsPage() {
     setLoading(true);
     try {
       const data = await api.getConfig();
-      setConfig(data.config || {});
+      const requestedProvider = section === "mail" ? String(searchParams.get("provider") || "") : "";
+      const validProvider = PROVIDERS.some((item) => item.value === requestedProvider) ? requestedProvider : "";
+      setConfig({ ...(data.config || {}), ...(validProvider ? { email_provider: validProvider } : {}) });
     } catch (err: any) {
       showToast(err.message || "加载配置失败", "error");
     } finally {
@@ -193,15 +286,6 @@ export function SettingsPage() {
   useEffect(() => {
     load();
   }, []);
-
-  useEffect(() => {
-    if (!configFileOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setConfigFileOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [configFileOpen]);
 
   const setField = (key: string, value: any) => {
     setConfig((previous) => ({ ...previous, [key]: value }));
@@ -224,56 +308,15 @@ export function SettingsPage() {
     }
   };
 
-  const loadConfigFile = async () => {
-    setConfigFileLoading(true);
-    setConfigFileError("");
-    try {
-      const data = await api.getConfigFile();
-      setConfigFile(data.file);
-    } catch (err: any) {
-      setConfigFileError(err.message || "读取配置失败");
-    } finally {
-      setConfigFileLoading(false);
-    }
-  };
-
-  const openConfigFile = () => {
-    setConfigFileOpen(true);
-    setShowConfigSecrets(true);
-    void loadConfigFile();
-  };
-
-  const displayedConfigContent = (() => {
-    const content = String(configFile?.content || "");
-    if (showConfigSecrets || !content) return content;
-    try {
-      const parsed = JSON.parse(content);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return content;
-      for (const key of configFile?.sensitive_keys || []) {
-        if (key in parsed && parsed[key] !== "" && parsed[key] !== null) parsed[key] = "********";
-      }
-      return JSON.stringify(parsed, null, 2);
-    } catch {
-      return content;
-    }
-  })();
-
-  const copyConfigValue = async (value: string, label: string) => {
-    const copied = await copyText(value);
-    showToast(copied ? `已复制${label}` : `${label}复制失败`, copied ? "success" : "error");
-  };
+  const meta = SECTION_META[section];
 
   return (
     <div className="space-y-5 sm:space-y-6">
       <PageHeader
-        title="系统设置"
-        description="按功能区分注册、入库与邮箱配置；修改只在保存后生效。"
+        title={meta.title}
+        description={meta.description}
         actions={
           <>
-            <Button className="basis-full sm:basis-auto" variant="outline" onClick={openConfigFile}>
-              <FileJson className="h-4 w-4" aria-hidden="true" />
-              查看配置
-            </Button>
             <Button variant="outline" onClick={load} disabled={loading || saving}>
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
               重新加载
@@ -286,33 +329,8 @@ export function SettingsPage() {
         }
       />
 
-      <div className="grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <Card className="lg:sticky lg:top-24">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">设置菜单</CardTitle>
-            <CardDescription>选择要维护的功能区域</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-1">
-            {SETTINGS_SECTIONS.map((section) => (
-              <button
-                key={section.value}
-                type="button"
-                onClick={() => setActiveSection(section.value)}
-                className={`rounded-xl border px-3 py-3 text-left transition-colors ${
-                  activeSection === section.value
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
-                }`}
-              >
-                <div className="text-sm font-medium">{section.label}</div>
-                <div className="mt-1 text-xs leading-5 opacity-80">{section.description}</div>
-              </button>
-            ))}
-          </CardContent>
-        </Card>
-
-        <div className="space-y-4">
-        {activeSection === "basic" ? (
+      <div className="space-y-4">
+        {section === "registration" ? (
         <Card>
           <CardHeader className="flex-row items-start gap-3">
             <SectionIcon><Settings2 className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -332,6 +350,26 @@ export function SettingsPage() {
                 {PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </Select>
               <p className="text-xs leading-5 text-muted-foreground">{selectedProvider.description}</p>
+            </div>
+            <div className="flex flex-col gap-3 rounded-xl border border-sky-100 bg-sky-50/70 p-3 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-sky-600 ring-1 ring-sky-100">
+                  <Mail className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-900">配置 {selectedProvider.label}</div>
+                  <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                    {selectedProvider.value === "outlookemail" ? "前往邮箱池页面配置接口、账号来源和自动停用。" : "前往邮箱服务页面填写该服务商需要的接口与凭据。"}
+                  </p>
+                </div>
+              </div>
+              <Link
+                to={selectedProvider.value === "outlookemail" ? "/settings/outlook" : `/settings/mail?provider=${encodeURIComponent(selectedProvider.value)}`}
+                className={buttonVariants({ variant: "outline", className: "w-full bg-white sm:w-auto" })}
+              >
+                前往设置
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
             </div>
             <ConfigField {...fieldState} label="网络代理" field="proxy" placeholder="http://127.0.0.1:7890" />
             <ConfigField {...fieldState}
@@ -387,8 +425,9 @@ export function SettingsPage() {
         </Card>
         ) : null}
 
-        {activeSection === "cpa" ? (
+        {section === "cpa" || section === "grok2api" ? (
         <div className="space-y-4">
+          {section === "cpa" ? (
           <Card>
             <CardHeader className="flex-row items-start gap-3">
               <SectionIcon><ShieldCheck className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -418,8 +457,10 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+          ) : null}
 
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4">
+            {section === "cpa" ? (
             <Card>
               <CardHeader>
                 <CardTitle>CPA 目标</CardTitle>
@@ -432,11 +473,13 @@ export function SettingsPage() {
                 <ConfigField {...fieldState} label="账号代理" field="cpa_account_proxy" placeholder="http://proxy.example.com/<ACCOUNT>" helper="账号代理模板；含&lt;ACCOUNT&gt;时使用 email MD5 替换作为 proxy_url。" />
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "grok2api" ? (
             <Card>
               <CardHeader>
                 <CardTitle>Grok2API 目标</CardTitle>
-                <CardDescription>保存 grok_build JSON，并通过管理员账号登录远程服务导入。</CardDescription>
+                <CardDescription>保存 Grok Build、Grok Web、Grok Console 三种 JSON，并通过管理员账号登录远程服务导入。</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4">
                 <ConfigField {...fieldState} label="本地授权目录" field="grok2api_auth_dir" />
@@ -451,7 +494,7 @@ export function SettingsPage() {
                 <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
                 <ToggleRow
                   title="转换成功后自动导入"
-                  description="生成 Grok2API JSON 后立即登录远程管理端并导入；导入结果单独记录"
+                  description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
                   checked={!!config.grok2api_auto_import}
                   onCheckedChange={(value) => setField("grok2api_auto_import", value)}
                 />
@@ -463,11 +506,12 @@ export function SettingsPage() {
                 />
               </CardContent>
             </Card>
+            ) : null}
           </div>
         </div>
         ) : null}
 
-        {activeSection === "providers" ? (
+        {section === "mail" ? (
         <Card>
           <CardHeader className="flex-row items-start gap-3">
             <SectionIcon><Cloud className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -491,8 +535,9 @@ export function SettingsPage() {
 
             {selectedProvider.value === "cloudflare" ? (
               <>
-                <ConfigField {...fieldState} label="接口地址" field="cloudflare_api_base" helper="Cloudflare 临时邮箱 Worker/API 根地址" />
-                <ConfigField {...fieldState} label="API Key / 管理员密码" field="cloudflare_api_key" type="password" />
+                <CloudflareHelp />
+                <ConfigField {...fieldState} label="接口地址" field="cloudflare_api_base" placeholder="https://mail.example.com" helper="Worker 根地址，不要带 /api 或结尾斜杠" />
+                <ConfigField {...fieldState} label="API Key / 管理员密码" field="cloudflare_api_key" type="password" helper="后台 ADMIN_PASSWORDS，作为 x-admin-auth 发送" />
                 <div className="min-w-0 space-y-2">
                   <Label htmlFor="cloudflare_auth_mode">鉴权方式</Label>
                   <Select
@@ -506,11 +551,11 @@ export function SettingsPage() {
                   </Select>
                 </div>
                 <ConfigField {...fieldState} label="全局访问密码" field="cloudflare_custom_auth" type="password" helper="对应 Worker PASSWORDS，发送到 X-Custom-Auth" />
-                <ConfigField {...fieldState} label="收信域名" field="defaultDomains" helper="多个域名可用逗号或空格分隔" />
-                <ConfigField {...fieldState} label="域名接口路径" field="cloudflare_path_domains" />
-                <ConfigField {...fieldState} label="创建邮箱接口路径" field="cloudflare_path_accounts" />
-                <ConfigField {...fieldState} label="获取 Token 接口路径" field="cloudflare_path_token" />
-                <ConfigField {...fieldState} label="邮件列表接口路径" field="cloudflare_path_messages" />
+                <ConfigField {...fieldState} label="收信域名" field="defaultDomains" placeholder="example.com" helper="必填，需与后台 DOMAINS 一致；多个用逗号分隔，轮流使用" />
+                <ConfigField {...fieldState} label="创建邮箱接口路径" field="cloudflare_path_accounts" placeholder="/admin/new_address" helper="保持默认 /admin/new_address" />
+                <ConfigField {...fieldState} label="邮件列表接口路径" field="cloudflare_path_messages" placeholder="/api/mails" helper="默认 /api/mails；新版 Worker 可填 /api/parsed_mails" />
+                <ConfigField {...fieldState} label="域名接口路径" field="cloudflare_path_domains" placeholder="/api/domains" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
+                <ConfigField {...fieldState} label="获取 Token 接口路径" field="cloudflare_path_token" placeholder="/api/token" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
               </>
             ) : null}
 
@@ -539,15 +584,19 @@ export function SettingsPage() {
             ) : null}
 
             {selectedProvider.value === "outlookemail" ? (
-              <div className="sm:col-span-2 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
-                OutlookEmail 的账号池、临时邮箱和自动停用配置已单独放在“Outlook 邮箱池”子菜单。
+              <div className="flex flex-col gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>OutlookEmail 的账号池、临时邮箱和自动停用配置位于独立页面。</span>
+                <Link to="/settings/outlook" className={buttonVariants({ variant: "outline", size: "sm", className: "bg-white" })}>
+                  打开邮箱池设置
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </Link>
               </div>
             ) : null}
           </CardContent>
         </Card>
         ) : null}
 
-        {activeSection === "outlook" ? (
+        {section === "outlook" ? (
         <Card>
           <CardHeader className="flex-row items-start gap-3">
             <SectionIcon><Mail className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -624,7 +673,6 @@ export function SettingsPage() {
           </CardContent>
         </Card>
         ) : null}
-        </div>
       </div>
 
       <div className="sticky bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-20 rounded-2xl border bg-card/95 p-2 shadow-lg backdrop-blur lg:hidden">
@@ -633,103 +681,6 @@ export function SettingsPage() {
           {saving ? "保存中…" : "保存全部配置"}
         </Button>
       </div>
-
-      {configFileOpen ? (
-        <div
-          className="fixed inset-0 z-[70] flex items-end bg-slate-950/50 sm:items-center sm:justify-center sm:p-6"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setConfigFileOpen(false);
-          }}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="config-file-title"
-            className="flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-card shadow-2xl sm:max-w-5xl sm:rounded-3xl"
-          >
-            <div className="mx-auto mt-2 h-1.5 w-12 shrink-0 rounded-full bg-slate-300 sm:hidden" />
-            <header className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 sm:px-5">
-              <div className="min-w-0">
-                <h2 id="config-file-title" className="flex items-center gap-2 font-semibold text-foreground">
-                  <FileJson className="h-4 w-4 text-primary" aria-hidden="true" />
-                  配置详情
-                </h2>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {configFile?.exists ? "磁盘文件" : "运行时配置预览"}
-                </p>
-              </div>
-              <Button size="icon" variant="ghost" onClick={() => setConfigFileOpen(false)} aria-label="关闭配置详情">
-                <X className="h-5 w-5" aria-hidden="true" />
-              </Button>
-            </header>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
-              {configFileLoading && !configFile ? (
-                <div className="flex min-h-64 items-center justify-center text-sm text-muted-foreground">
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                  读取中…
-                </div>
-              ) : configFileError ? (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{configFileError}</div>
-              ) : configFile ? (
-                <div className="space-y-4">
-                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-center">
-                    <div className="min-w-0 rounded-xl border bg-muted/35 p-3">
-                      <div className="text-xs font-medium text-muted-foreground">实际路径</div>
-                      <div className="mt-1 break-all font-mono text-xs leading-5 text-foreground">{configFile.path}</div>
-                    </div>
-                    <Button variant="outline" onClick={() => copyConfigValue(configFile.path, "配置路径")}>
-                      <Copy className="h-4 w-4" aria-hidden="true" />
-                      复制路径
-                    </Button>
-                    <Button variant="outline" onClick={loadConfigFile} disabled={configFileLoading}>
-                      <RefreshCw className={`h-4 w-4 ${configFileLoading ? "animate-spin" : ""}`} aria-hidden="true" />
-                      刷新
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span className={`rounded-full border px-2.5 py-1 ${configFile.exists ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "bg-muted"}`}>
-                      {configFile.exists ? "文件存在" : "文件未创建"}
-                    </span>
-                    <span>{configFile.size.toLocaleString()} bytes</span>
-                    {configFile.modified_at ? <span>{new Date(configFile.modified_at).toLocaleString()}</span> : null}
-                  </div>
-
-                  {configFile.parse_error ? (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                      JSON 解析异常：{configFile.parse_error}
-                    </div>
-                  ) : null}
-
-                  <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-slate-800">
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white/80 px-3 py-2">
-                      <span className="text-xs font-medium text-slate-600">JSON 配置内容</span>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => setShowConfigSecrets((value) => !value)}
-                        >
-                          {showConfigSecrets ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-                          {showConfigSecrets ? "隐藏敏感值" : "显示敏感值"}
-                        </Button>
-                        <Button size="sm" variant="secondary" onClick={() => copyConfigValue(displayedConfigContent, "JSON")}>
-                          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                          复制 JSON
-                        </Button>
-                      </div>
-                    </div>
-                    <pre className="max-h-[52dvh] overflow-auto whitespace-pre p-4 font-mono text-xs leading-5 sm:text-sm">
-                      {displayedConfigContent}
-                    </pre>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       <Toast message={toast.message} tone={toast.tone} />
     </div>

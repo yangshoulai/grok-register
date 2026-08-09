@@ -10,6 +10,8 @@ from typing import Any, Callable, Dict, List, Optional
 from backend.mailbox.utilities import (
     extract_verification_code,
     generate_username,
+    looks_like_raw_email,
+    parse_raw_email,
     pick_list_payload,
     strip_html,
 )
@@ -72,7 +74,7 @@ def create_temp_address(
     http_post: HttpPost,
     api_base: str,
     *,
-    accounts_path: str = "/api/new_address",
+    accounts_path: str = "/admin/new_address",
     domain: str = "",
     api_key: str = "",
     auth_mode: str = "none",
@@ -82,10 +84,18 @@ def create_temp_address(
     path = accounts_path if accounts_path.startswith("/") else f"/{accounts_path}"
     url = f"{api_base.rstrip('/')}{path}"
     if is_admin_create_path(path):
+        # 官方 admin 建号接口要求 x-admin-auth；即使 auth_mode 被设成 none，
+        # 只要配置了管理员密码就应带上，否则会 401。
         payload = {"name": name or generate_username(10), "enablePrefix": True}
         if domain:
             payload["domain"] = domain
-        headers = build_headers(api_key, auth_mode, custom_auth, content_type=True)
+        effective_mode = (auth_mode or "none").lower()
+        if api_key and effective_mode in {"", "none"}:
+            effective_mode = "x-admin-auth"
+        headers = build_headers(api_key, effective_mode, custom_auth, content_type=True)
+        if api_key and "x-admin-auth" not in {k.lower() for k in headers}:
+            # 非 x-admin-auth 模式时仍补上 admin 头，兼容只配了密码的场景。
+            headers["x-admin-auth"] = api_key
     else:
         payload = {}
         if domain:
@@ -234,6 +244,38 @@ def get_message_detail(
     raise Exception(f"Cloudflare 获取邮件详情失败: {last_err}")
 
 
+_TEXT_FIELDS = ("text", "raw", "source", "content", "intro", "body", "snippet")
+
+
+def collect_mail_text(payload: dict) -> tuple[str, str]:
+    """从一条邮件记录里抽出 (正文, 主题)。
+
+    /api/mails 与 /admin/mails 只回原始 MIME（raw / source 字段），需要先解码
+    再交给验证码正则；新版 Worker 的 /api/parsed_mails 已带 text/subject，
+    两种形状都要吃得下，所以按字段逐个判断是否像 RFC822 原文。
+    """
+    parts: List[str] = []
+    subject = str(payload.get("subject", "") or "")
+    for field in _TEXT_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if looks_like_raw_email(value):
+            parsed = parse_raw_email(value)
+            parts.append(parsed["text"])
+            if not subject:
+                subject = parsed["subject"]
+        else:
+            parts.append(value)
+    html_value = payload.get("html") or []
+    if isinstance(html_value, str):
+        html_value = [html_value]
+    for item in html_value:
+        if isinstance(item, str) and item.strip():
+            parts.append(strip_html(item))
+    return "\n".join(parts), subject
+
+
 def create_mailbox_fallback(
     http_get: HttpGet,
     http_post: HttpPost,
@@ -361,18 +403,7 @@ def wait_for_code(
                     f"[Debug] 跳过疑似非目标邮件 id={msg_id} address={msg_addr} to={recipients}"
                 )
                 continue
-            parts = []
-            for field in ("text", "raw", "content", "intro", "body", "snippet"):
-                value = msg.get(field)
-                if isinstance(value, str) and value.strip():
-                    parts.append(value)
-            html_list = msg.get("html") or []
-            if isinstance(html_list, str):
-                html_list = [html_list]
-            for h in html_list:
-                parts.append(strip_html(h))
-            subject = str(msg.get("subject", "") or "")
-            combined = "\n".join(parts)
+            combined, subject = collect_mail_text(msg)
             try:
                 detail = get_message_detail(
                     http_get,
@@ -384,17 +415,11 @@ def wait_for_code(
                     auth_mode=auth_mode,
                     custom_auth=custom_auth,
                 )
-                for field in ("text", "raw", "content", "intro", "body", "snippet"):
-                    value = detail.get(field)
-                    if isinstance(value, str) and value.strip():
-                        combined += "\n" + value
-                html_list2 = detail.get("html") or []
-                if isinstance(html_list2, str):
-                    html_list2 = [html_list2]
-                for h in html_list2:
-                    combined += "\n" + strip_html(h)
+                detail_text, detail_subject = collect_mail_text(detail)
+                if detail_text:
+                    combined += "\n" + detail_text
                 if not subject:
-                    subject = str(detail.get("subject", "") or "")
+                    subject = detail_subject
             except Exception as exc:
                 if log_callback:
                     log_callback(f"[Debug] Cloudflare detail接口失败，改用列表内容解析: {exc}")
