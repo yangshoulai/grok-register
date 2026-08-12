@@ -102,6 +102,16 @@ function importStatusLabel(status: string) {
   return labels[status] || status || "未知";
 }
 
+function monitorDeliveryLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending: "等待投递",
+    delivering: "正在投递",
+    delivered: "已接收",
+    not_queued: "未加入队列",
+  };
+  return labels[status] || status || "未加入队列";
+}
+
 function compactBadgeVariant(status: string) {
   if (status === "success") return "success" as const;
   if (status === "failed" || status === "rejected") return "destructive" as const;
@@ -245,6 +255,10 @@ function AccountDetails({
     ["Grok2API 远程入库", remoteImportLabel(detail.grok2api_remote_status)],
     ["Grok2API 远程入库时间", detail.grok2api_remote_imported_at],
     ["Grok2API 远程错误", detail.grok2api_remote_error],
+    ["Webhook 投递", monitorDeliveryLabel(detail.monitor_delivery?.status || "not_queued")],
+    ["Webhook 尝试次数", String(detail.monitor_delivery?.attempts || 0)],
+    ["Webhook 接收时间", detail.monitor_delivery?.delivered_at || ""],
+    ["Webhook 最近错误", detail.monitor_delivery?.last_error || ""],
     ["Auth 信息", detail.auth_info],
     ["邮箱池账号 ID", detail.email_account_id],
     ["邮箱停用状态", emailDisableLabel(detail.email_disable_status)],
@@ -277,6 +291,11 @@ function AccountDetails({
           <Badge variant={cpaVariant(detail.grok2api_remote_status)}>
             Grok2API {remoteImportLabel(detail.grok2api_remote_status)}
           </Badge>
+          {detail.monitor_delivery?.status && detail.monitor_delivery.status !== "not_queued" ? (
+            <Badge variant={cpaVariant(detail.monitor_delivery.status === "delivered" ? "success" : "ready")}>
+              Webhook {monitorDeliveryLabel(detail.monitor_delivery.status)}
+            </Badge>
+          ) : null}
           <Badge variant={emailDisableVariant(detail.email_disable_status)}>
             邮箱 {emailDisableLabel(detail.email_disable_status)}
           </Badge>

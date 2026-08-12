@@ -62,6 +62,14 @@ export type AccountRecord = {
   sso_saved: boolean;
   bot_risk?: boolean;
   bfs?: string | number | null;
+  monitor_delivery?: {
+    event_id: string;
+    status: string;
+    attempts: number;
+    last_attempt_at: string;
+    delivered_at: string;
+    last_error: string;
+  };
   extra?: Record<string, unknown>;
 };
 

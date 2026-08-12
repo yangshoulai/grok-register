@@ -137,6 +137,30 @@ class RegistrationRepository:
                     ON registration_results(status);
                 CREATE INDEX IF NOT EXISTS idx_registration_results_batch
                     ON registration_results(batch_id);
+
+                CREATE TABLE IF NOT EXISTS account_monitor_outbox (
+                    event_id TEXT PRIMARY KEY,
+                    registration_id INTEGER NOT NULL UNIQUE,
+                    event_type TEXT NOT NULL DEFAULT 'grok2api.account_imported',
+                    email TEXT NOT NULL,
+                    bot_risk INTEGER NOT NULL DEFAULT 0,
+                    bfs TEXT NOT NULL DEFAULT '',
+                    occurred_at TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT NOT NULL DEFAULT '',
+                    delivered_at TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    response_json TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_account_monitor_outbox_due
+                    ON account_monitor_outbox(status, next_attempt_at);
+                CREATE INDEX IF NOT EXISTS idx_account_monitor_outbox_email
+                    ON account_monitor_outbox(email COLLATE NOCASE);
                 """
             )
             existing_columns = {
@@ -218,7 +242,7 @@ class RegistrationRepository:
                 """,
                 (self.now_text(),),
             )
-            conn.execute("PRAGMA user_version = 6")
+            conn.execute("PRAGMA user_version = 7")
 
     def add_result(self, record: Dict[str, Any]) -> int:
         now = self.now_text()
@@ -283,6 +307,184 @@ class RegistrationRepository:
                 normalized,
             )
             return int(cursor.lastrowid)
+
+    def enqueue_account_monitor_event(
+        self,
+        *,
+        registration_id: int,
+        email: str,
+        bot_risk: bool,
+        bfs: Any,
+        occurred_at: str,
+    ) -> Dict[str, Any]:
+        """Create one durable, idempotent account-imported notification."""
+
+        normalized_id = int(registration_id)
+        if normalized_id <= 0:
+            raise ValueError("registration_id 必须是正整数")
+        normalized_email = str(email or "").strip().lower()
+        if "@" not in normalized_email:
+            raise ValueError("账号监控通知缺少有效邮箱")
+        event_id = f"registration:{normalized_id}:grok2api-imported"
+        now_text = self.now_text()
+        now_epoch = _datetime.datetime.now().timestamp()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO account_monitor_outbox (
+                    event_id, registration_id, event_type, email, bot_risk, bfs,
+                    occurred_at, status, attempts,
+                    next_attempt_at, created_at, updated_at
+                ) VALUES (?, ?, 'grok2api.account_imported', ?, ?, ?, ?,
+                          'pending', 0, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    normalized_id,
+                    normalized_email,
+                    1 if bot_risk else 0,
+                    "" if bfs is None else str(bfs),
+                    str(occurred_at or ""),
+                    now_epoch,
+                    now_text,
+                    now_text,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM account_monitor_outbox WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def recover_account_monitor_deliveries(self) -> int:
+        now_text = self.now_text()
+        now_epoch = _datetime.datetime.now().timestamp()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE account_monitor_outbox
+                SET status = 'pending', next_attempt_at = ?, updated_at = ?
+                WHERE status = 'delivering'
+                """,
+                (now_epoch, now_text),
+            )
+            return int(cursor.rowcount or 0)
+
+    def claim_account_monitor_delivery(self) -> Dict[str, Any] | None:
+        now_epoch = _datetime.datetime.now().timestamp()
+        now_text = self.now_text()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM account_monitor_outbox
+                WHERE status = 'pending' AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (now_epoch,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = conn.execute(
+                """
+                UPDATE account_monitor_outbox
+                SET status = 'delivering', attempts = attempts + 1,
+                    last_attempt_at = ?, updated_at = ?
+                WHERE event_id = ? AND status = 'pending'
+                """,
+                (now_text, now_text, row["event_id"]),
+            )
+            if not cursor.rowcount:
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM account_monitor_outbox WHERE event_id = ?",
+                (row["event_id"],),
+            ).fetchone()
+        return dict(claimed) if claimed is not None else None
+
+    def retry_account_monitor_delivery(
+        self,
+        event_id: str,
+        *,
+        error: str,
+        delay_seconds: float,
+        response_json: str = "",
+    ) -> None:
+        now_text = self.now_text()
+        next_attempt = _datetime.datetime.now().timestamp() + max(
+            float(delay_seconds), 1.0
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_monitor_outbox
+                SET status = 'pending', next_attempt_at = ?, last_error = ?,
+                    response_json = ?, updated_at = ?
+                WHERE event_id = ? AND status != 'delivered'
+                """,
+                (
+                    next_attempt,
+                    str(error or "")[:4000],
+                    str(response_json or "")[:16000],
+                    now_text,
+                    str(event_id),
+                ),
+            )
+
+    def complete_account_monitor_delivery(
+        self,
+        event_id: str,
+    ) -> None:
+        now_text = self.now_text()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_monitor_outbox
+                SET status = 'delivered', delivered_at = ?, last_error = '',
+                    response_json = '', updated_at = ?
+                WHERE event_id = ?
+                """,
+                (
+                    now_text,
+                    now_text,
+                    str(event_id),
+                ),
+            )
+
+    def account_monitor_deliveries(
+        self, registration_ids: Iterable[int | str]
+    ) -> Dict[int, Dict[str, Any]]:
+        ids: List[int] = []
+        seen = set()
+        for raw in registration_ids or []:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0 or value in seen:
+                continue
+            seen.add(value)
+            ids.append(value)
+        if not ids:
+            return {}
+        result: Dict[int, Dict[str, Any]] = {}
+        with self._connect() as conn:
+            for start in range(0, len(ids), SQLITE_IN_BATCH_SIZE):
+                batch = ids[start : start + SQLITE_IN_BATCH_SIZE]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM account_monitor_outbox
+                    WHERE registration_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+                result.update(
+                    {int(row["registration_id"]): dict(row) for row in rows}
+                )
+        return result
 
     def has_success(self, email: str) -> bool:
         normalized = str(email or "").strip()
@@ -681,6 +883,11 @@ class RegistrationRepository:
             for start in range(0, len(delete_ids), SQLITE_IN_BATCH_SIZE):
                 batch = delete_ids[start : start + SQLITE_IN_BATCH_SIZE]
                 placeholders = ", ".join("?" for _ in batch)
+                conn.execute(
+                    f"DELETE FROM account_monitor_outbox "
+                    f"WHERE registration_id IN ({placeholders})",
+                    batch,
+                )
                 conn.execute(
                     f"DELETE FROM registration_results WHERE id IN ({placeholders})",
                     batch,

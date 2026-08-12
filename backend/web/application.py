@@ -27,6 +27,8 @@ from pydantic import BaseModel, Field
 from .account_exports import build_account_auth_archive, build_sso_archive, read_sso_token
 from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
+from backend.integrations.proxy import validate_http_proxy_url
+from backend.integrations import account_monitor
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
 
 APP_DIR = PROJECT_ROOT
@@ -87,6 +89,16 @@ CONFIG_PUBLIC_KEYS = (
     "grok2api_remote_password",
     "grok2api_auto_import",
     "grok2api_import_web_sso",
+    "monitor_webhook_enabled",
+    "monitor_webhook_url",
+    "monitor_webhook_token",
+    "monitor_webhook_timeout_seconds",
+    "mailnest_api_key",
+    "mailnest_project_code",
+    "yyds_api_key",
+    "yyds_jwt",
+    "yyds_default_domain",
+    "account_interval",
 )
 SENSITIVE_HINT_KEYS = {
     "duckmail_api_key",
@@ -98,9 +110,11 @@ SENSITIVE_HINT_KEYS = {
     "outlookemail_session_cookie",
     "cpa_management_key",
     "grok2api_remote_password",
+    "monitor_webhook_token",
     "mailnest_api_key",
     "yyds_api_key",
     "yyds_jwt",
+    "proxy",
 }
 
 
@@ -294,6 +308,14 @@ def _config_file_snapshot() -> Dict[str, Any]:
 def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     gr = _gr()
     gr.load_config()
+    proxy_update: Optional[str] = None
+    if "proxy" in updates:
+        proxy_update = str(updates.get("proxy") or "").strip()
+        if proxy_update.lower().startswith(("http:", "https:")):
+            try:
+                proxy_update = validate_http_proxy_url(proxy_update)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
     changed: List[str] = []
     for key in CONFIG_PUBLIC_KEYS:
         if key not in updates:
@@ -307,10 +329,16 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "cpa_auto_add",
             "grok2api_auto_import",
             "grok2api_import_web_sso",
+            "monitor_webhook_enabled",
             "outlookemail_disable_after_cpa_success",
         ):
             value = bool(value)
-        elif key in ("register_count", "register_workers", "outlookemail_top"):
+        elif key in (
+            "register_count",
+            "register_workers",
+            "outlookemail_top",
+            "monitor_webhook_timeout_seconds",
+        ):
             try:
                 value = int(value)
             except (TypeError, ValueError):
@@ -321,6 +349,8 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
                 value = max(1, min(value, 8))
             elif key == "outlookemail_top":
                 value = max(1, min(value, 50))
+            elif key == "monitor_webhook_timeout_seconds":
+                value = max(1, min(value, 60))
         elif key == "log_level":
             value = str(value or "info").strip().lower() or "info"
         elif key == "browser_locale":
@@ -352,11 +382,23 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "proxy",
             "cpa_remote_url",
             "grok2api_remote_url",
+            "monitor_webhook_url",
             "outlookemail_api_base",
             "duckmail_api_base",
             "cloudflare_api_base",
         ):
-            value = str(value or "").strip()
+            value = proxy_update if key == "proxy" else str(value or "").strip()
+            if key == "monitor_webhook_url" and value:
+                try:
+                    account_monitor.validate_monitor_config(
+                        {
+                            **gr.config,
+                            **updates,
+                            "monitor_webhook_url": value,
+                        }
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             if isinstance(value, (dict, list)):
                 continue
@@ -365,11 +407,20 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             )
         gr.config[key] = value
         changed.append(key)
+    try:
+        account_monitor.validate_monitor_config(gr.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     gr.save_config()
+    if any(key.startswith("monitor_webhook_") for key in changed):
+        account_monitor.monitor_notifier.wake()
     return {"changed": changed, "config": _public_config(gr.config)}
 
 
-def _serialize_record(record: Dict[str, Any]) -> Dict[str, Any]:
+def _serialize_record(
+    record: Dict[str, Any],
+    monitor_delivery: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     item = dict(record or {})
     if not item.get("cpa_auth_path"):
         item["cpa_auth_path"] = _record_auth_path(item, "cpa")
@@ -415,6 +466,15 @@ def _serialize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
     item["exception_type"] = str(extra_data.get("exception_type") or "")
     item["has_exception_traceback"] = bool(item["exception_traceback"])
+    delivery = dict(monitor_delivery or {})
+    item["monitor_delivery"] = {
+        "event_id": str(delivery.get("event_id") or ""),
+        "status": str(delivery.get("status") or "not_queued"),
+        "attempts": int(delivery.get("attempts") or 0),
+        "last_attempt_at": str(delivery.get("last_attempt_at") or ""),
+        "delivered_at": str(delivery.get("delivered_at") or ""),
+        "last_error": str(delivery.get("last_error") or ""),
+    }
     return item
 
 
@@ -679,11 +739,19 @@ def create_app() -> FastAPI:
         gr.load_config()
         gr._wire_runtime_modules()
         try:
-            gr.get_registration_repository()
+            repository = gr.get_registration_repository()
             gr.backfill_access_token_bot_risk()
             gr.backfill_registration_risk_bot_risk()
+            account_monitor.monitor_notifier.start(
+                repository,
+                lambda: dict(gr.config),
+            )
         except Exception as exc:
             print(f"[web] 初始化 SQLite 失败: {exc}", flush=True)
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        account_monitor.monitor_notifier.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
@@ -818,6 +886,9 @@ def create_app() -> FastAPI:
             batch_id=batch_norm,
             bot_risk=bot_risk_norm,
         )
+        monitor_deliveries = store.account_monitor_deliveries(
+            [row.get("id") for row in rows]
+        )
         return {
             "ok": True,
             "total": total,
@@ -825,7 +896,13 @@ def create_app() -> FastAPI:
             "has_more": offset + len(rows) < total,
             "offset": offset,
             "limit": limit,
-            "items": [_serialize_record(row) for row in rows],
+            "items": [
+                _serialize_record(
+                    row,
+                    monitor_deliveries.get(int(row.get("id") or 0)),
+                )
+                for row in rows
+            ],
         }
 
     @app.get("/api/accounts/relogin/status")
@@ -887,7 +964,8 @@ def create_app() -> FastAPI:
         rows = store.get_results_by_ids([account_id])
         if not rows:
             raise HTTPException(status_code=404, detail="记录不存在")
-        return {"ok": True, "item": _serialize_record(rows[0])}
+        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        return {"ok": True, "item": _serialize_record(rows[0], delivery)}
 
     @app.post("/api/accounts/{account_id}/relogin")
     def api_account_relogin(account_id: int) -> Dict[str, Any]:
@@ -971,6 +1049,20 @@ def create_app() -> FastAPI:
             error="; ".join(import_errors),
         )
         refreshed = store.get_results_by_ids([account_id])[0]
+        monitor_notification: Dict[str, Any] = {"queued": False}
+        if "grok_build" in results:
+            try:
+                event = account_monitor.enqueue_imported_account(
+                    store,
+                    refreshed,
+                    gr.config,
+                )
+                monitor_notification = {
+                    "queued": bool(event),
+                    "eventId": str((event or {}).get("event_id") or ""),
+                }
+            except Exception as exc:
+                monitor_notification = {"queued": False, "error": str(exc)}
         aggregate = {
             "formats": results,
             "errors": errors,
@@ -979,7 +1071,13 @@ def create_app() -> FastAPI:
             "synced": sum(int(result.get("synced", 0) or 0) for result in results.values()),
             "syncFailed": sync_failed,
         }
-        return {"ok": True, "result": aggregate, "item": _serialize_record(refreshed)}
+        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        return {
+            "ok": True,
+            "result": aggregate,
+            "monitorNotification": monitor_notification,
+            "item": _serialize_record(refreshed, delivery),
+        }
 
     @app.get("/api/accounts/{account_id}/failure-screenshot")
     def api_account_failure_screenshot(account_id: int) -> FileResponse:

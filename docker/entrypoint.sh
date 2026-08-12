@@ -17,12 +17,34 @@ from pathlib import Path
 source = Path("/app/config.example.json")
 target = Path(sys.argv[1])
 config = json.loads(source.read_text(encoding="utf-8"))
+
+
+def env_int(name, default, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 config["browser_headless"] = False
 config["cpa_auth_dir"] = "data/cpa_auth"
 config["grok2api_auth_dir"] = "data/grok2api_auth"
 config["outlookemail_api_base"] = os.environ.get(
     "GROK_OUTLOOKEMAIL_API_BASE", "http://outlook-email:5000"
 ).strip()
+monitor_url = os.environ.get("GROK_MONITOR_WEBHOOK_URL", "").strip()
+monitor_token = os.environ.get("GROK_MONITOR_WEBHOOK_TOKEN", "").strip()
+if monitor_url:
+    config["monitor_webhook_url"] = monitor_url
+if monitor_token:
+    config["monitor_webhook_token"] = monitor_token
+config["monitor_webhook_enabled"] = os.environ.get(
+    "GROK_MONITOR_WEBHOOK_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+config["monitor_webhook_timeout_seconds"] = env_int(
+    "GROK_MONITOR_WEBHOOK_TIMEOUT_SECONDS", 10, 1, 60
+)
 target.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   echo "[docker] 已创建容器默认配置: $CONFIG_FILE"

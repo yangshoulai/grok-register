@@ -30,6 +30,7 @@ from playwright._impl._transport import PipeTransport as _PwPipeTransport
 from playwright.sync_api._generated import Playwright as _SyncPlaywright
 
 from backend.automation.page_adapter import CamoufoxBrowser, CamoufoxPage
+from backend.integrations.proxy import HTTP_PROXY_SCHEMES, parse_http_proxy_url
 
 
 class IsolatedCamoufox(_Camoufox):
@@ -381,11 +382,13 @@ def kill_all_camoufox_processes(log_callback=None) -> dict:
 
 
 def _build_camoufox_proxy(proxy_str: str) -> dict:
-    """把 http://host:port 格式的代理 URL 转换为 Camoufox/Playwright proxy dict。"""
+    """把代理 URL 转换为 Camoufox/Playwright proxy dict。"""
     proxy_str = proxy_str.strip()
     if not proxy_str:
         return {}
     parsed = urlparse(proxy_str)
+    if parsed.scheme.lower() in HTTP_PROXY_SCHEMES:
+        return parse_http_proxy_url(proxy_str)
     if parsed.scheme and parsed.hostname:
         server = f"{parsed.scheme}://{parsed.hostname}"
         if parsed.port:

@@ -13,6 +13,7 @@ from backend.automation.session import (
     active_browser,
     active_page,
     page,
+    restart_browser,
     set_browser_session,
     start_browser,
 )
@@ -20,12 +21,13 @@ from backend.registration.signup_flow import (
     _dismiss_cookie_consent,
     _native_click_action,
     _native_input_candidates,
-    _native_type_element,
     _try_sync_turnstile,
 )
 
 
 SIGNIN_URL = "https://accounts.x.ai/sign-in"
+SIGNIN_NAVIGATION_ATTEMPTS = 3
+SIGNIN_NAVIGATION_TIMEOUT_MS = 45_000
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float, interval: float = 0.25) -> bool:
@@ -142,7 +144,7 @@ def _click_submit(keywords) -> bool:
     )
 
 
-def _type_login_value(element, value: str, log_callback=None) -> bool:
+def _type_login_value(element, value: str, *, kind: str, log_callback=None) -> bool:
     """一次性使用 Playwright 键盘输入，兼容 React 受控登录框重渲染。"""
     if not element:
         return False
@@ -156,7 +158,7 @@ def _type_login_value(element, value: str, log_callback=None) -> bool:
         if current == text.strip():
             return True
         # 某些页面重渲染后 locator 句柄短暂失效，重新读取当前稳定元素。
-        fresh = _native_input_candidates("email" if "@" in text else "password")
+        fresh = _native_input_candidates(kind)
         if fresh:
             current = str(fresh[0]._raw.input_value() or "").strip()
         return current == text.strip()
@@ -166,21 +168,118 @@ def _type_login_value(element, value: str, log_callback=None) -> bool:
         return False
 
 
-def _navigate_signin(log_callback=None) -> None:
-    if active_browser() is None:
+def _signin_page_state(page_obj) -> dict:
+    """Return whether the sign-in UI is usable or blocked by the current route."""
+    state = {"url": "", "ready": False, "region_blocked": False, "text": ""}
+    try:
+        value = page_obj.run_js(
+            r"""
+const visible = (node) => {
+  if (!node) return false;
+  const style = getComputedStyle(node);
+  const rect = node.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden'
+    && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+};
+const text = String(document.body && document.body.innerText || '')
+  .replace(/\s+/g, ' ').trim().slice(0, 1200);
+const controls = [...document.querySelectorAll('button,a,[role="button"]')]
+  .filter(visible)
+  .map((node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || ''))
+  .join(' ').toLowerCase();
+const hasEmailInput = [...document.querySelectorAll('input')].some((node) => {
+  if (!visible(node)) return false;
+  const meta = [node.type, node.name, node.autocomplete, node.placeholder, node.getAttribute('data-testid')]
+    .filter(Boolean).join(' ').toLowerCase();
+  return meta.includes('email');
+});
+return {
+  url: String(location.href || ''),
+  text,
+  ready: hasEmailInput || controls.includes('login with email')
+    || controls.includes('continue with email') || controls.includes('使用邮箱登录'),
+};
+"""
+        )
+        if isinstance(value, dict):
+            state["url"] = str(value.get("url") or "")
+            state["text"] = str(value.get("text") or "")
+            state["ready"] = bool(value.get("ready"))
+    except Exception:
+        state["url"] = str(getattr(page_obj, "url", "") or "")
+    lower_text = state["text"].lower()
+    state["region_blocked"] = "service is not available in your region" in lower_text
+    return state
+
+
+def _wait_for_signin_page(page_obj, timeout: float = 12) -> dict:
+    deadline = time.time() + max(float(timeout or 0), 0)
+    state = _signin_page_state(page_obj)
+    while not state["ready"] and not state["region_blocked"] and time.time() < deadline:
+        time.sleep(0.25)
+        state = _signin_page_state(page_obj)
+    return state
+
+
+def _active_or_new_page(log_callback=None, *, restart: bool = False):
+    if restart:
+        restart_browser(log_callback=log_callback)
+    elif active_browser() is None:
         start_browser(log_callback=log_callback)
     browser_obj = active_browser()
-    tabs = browser_obj.get_tabs() if browser_obj is not None else []
+    if browser_obj is None:
+        raise RuntimeError("浏览器启动后未返回活动实例")
+    tabs = browser_obj.get_tabs()
     page_obj = tabs[-1] if tabs else browser_obj.new_tab()
     set_browser_session(browser_obj, page_obj)
-    page_obj.get(SIGNIN_URL)
-    try:
-        page_obj.wait.doc_loaded()
-    except Exception:
-        pass
-    current = str(getattr(page_obj, "url", "") or "")
-    if "accounts.x.ai" not in current:
-        raise RuntimeError(f"打开登录页失败，当前 URL: {current or 'empty'}")
+    return page_obj
+
+
+def _navigate_signin(log_callback=None) -> None:
+    last_error = ""
+    for attempt in range(1, SIGNIN_NAVIGATION_ATTEMPTS + 1):
+        page_obj = _active_or_new_page(
+            log_callback=log_callback,
+            restart=attempt > 1,
+        )
+        navigation_error = ""
+        try:
+            # 完整 load 会被慢代理或第三方资源长期拖住；登录控件只依赖 DOM 就绪。
+            page_obj.get(
+                SIGNIN_URL,
+                wait_until="domcontentloaded",
+                timeout=SIGNIN_NAVIGATION_TIMEOUT_MS,
+            )
+        except Exception as exc:
+            navigation_error = f"{type(exc).__name__}: {exc}"
+
+        state = _wait_for_signin_page(page_obj)
+        current = state["url"] or str(getattr(page_obj, "url", "") or "")
+        if state["ready"] and "accounts.x.ai" in current:
+            if navigation_error and log_callback:
+                log_callback(
+                    "[Debug] 登录页导航等待异常，但登录控件已经可用，继续执行: "
+                    f"{navigation_error[:240]}"
+                )
+            return
+
+        if state["region_blocked"]:
+            last_error = "当前代理出口地区不可用"
+        elif "accounts.x.ai" not in current:
+            last_error = f"打开登录页后进入了异常地址: {current or 'empty'}"
+        elif navigation_error:
+            last_error = f"登录页导航失败: {navigation_error}"
+        else:
+            preview = state["text"].replace("\n", " ").strip()[:180]
+            last_error = f"登录页已打开但未出现可用控件: {preview or 'empty page'}"
+
+        if attempt < SIGNIN_NAVIGATION_ATTEMPTS and log_callback:
+            log_callback(
+                f"[!] {last_error}，重启浏览器切换代理连接后重试 "
+                f"({attempt + 1}/{SIGNIN_NAVIGATION_ATTEMPTS})"
+            )
+
+    raise RuntimeError(last_error or "打开登录页失败")
 
 
 def _read_sso_cookie() -> str:
@@ -246,17 +345,23 @@ def login_with_password(
     if log_callback:
         log_callback(f"[*] 打开重新登录页: {normalized_email}")
 
-    clicked = _native_click_action(
-        ("login with email", "使用邮箱登录", "邮箱登录", "continue with email"),
-        deny_keywords=("sign up", "注册"),
-    )
-    if not clicked:
-        raise RuntimeError("登录页未找到“使用邮箱登录”按钮")
-
-    if not _wait_until(lambda: bool(_native_input_candidates("email")), 12):
-        raise RuntimeError("登录页未出现邮箱输入框")
     email_inputs = _native_input_candidates("email")
-    if not email_inputs or not _type_login_value(email_inputs[0], normalized_email, log_callback):
+    if not email_inputs:
+        clicked = _native_click_action(
+            ("login with email", "使用邮箱登录", "邮箱登录", "continue with email"),
+            deny_keywords=("sign up", "注册"),
+        )
+        if not clicked:
+            raise RuntimeError("登录页未找到“使用邮箱登录”按钮")
+        if not _wait_until(lambda: bool(_native_input_candidates("email")), 12):
+            raise RuntimeError("登录页未出现邮箱输入框")
+    email_inputs = _native_input_candidates("email")
+    if not email_inputs or not _type_login_value(
+        email_inputs[0],
+        normalized_email,
+        kind="email",
+        log_callback=log_callback,
+    ):
         raise RuntimeError("邮箱输入失败")
     if not _click_submit(("下一步", "next", "continue")):
         raise RuntimeError("邮箱页未找到下一步按钮")
@@ -265,7 +370,12 @@ def login_with_password(
         detail = _visible_login_error()
         raise RuntimeError(detail or "登录页未出现密码输入框")
     password_inputs = _native_input_candidates("password")
-    if not password_inputs or not _type_login_value(password_inputs[0], secret, log_callback):
+    if not password_inputs or not _type_login_value(
+        password_inputs[0],
+        secret,
+        kind="password",
+        log_callback=log_callback,
+    ):
         raise RuntimeError("密码输入失败")
     if not _try_sync_turnstile(
         log_callback=log_callback,

@@ -170,6 +170,38 @@ GitHub Actions 规则：
 
 需要免登录分发时，在 GitHub Packages 将容器包设为 Public。
 
+## 与 Grok Account Monitor 统一编排
+
+`compose.monitor.yaml` 会在同一 Compose 网络中并列启动注册机、监控后端和监控前端：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少让 MONITOR_WEBHOOK_TOKEN 与监控端令牌一致
+docker compose -f compose.yaml -f compose.monitor.yaml pull
+docker compose -f compose.yaml -f compose.monitor.yaml up -d
+```
+
+容器内调用地址固定为：
+
+```text
+http://monitor-backend:8090/api/integrations/grok-register/account-imported
+```
+
+监控后端只有 `expose: 8090`，没有映射宿主机端口；注册机通过 Compose 内部网络投递 Webhook。监控前端默认绑定宿主机所有网卡：
+
+```text
+0.0.0.0:${MONITOR_WEB_PORT:-8091}
+```
+
+因此可直接通过 `http://服务器公网IP:8091` 访问。若只允许反向代理访问，在 `.env` 设置 `MONITOR_WEB_BIND=127.0.0.1`，再将监控域名整体转发到 `127.0.0.1:8091`。监控前端 Nginx 会把 `/api` 转发到内部后端。
+
+首次启动后还需在两个页面完成配置：
+
+1. 监控端“系统设置 → 联动与启动项”设置联动 Token、开启注册后探针并保存探针方案、轮数和出口目标。
+2. 注册机“系统设置 → Grok2API”开启账号监控联动，填写相同 Token；探针设置只在监控端维护。
+
+注册机只在 `grok_build` 导入成功后发送一次账号已导入事件。HTTP 未接收时由本地持久 Outbox 重试；收到 `2xx` 后结束投递，不查询后续探针或风险结果。
+
 ## 本机 Python 运行
 
 要求：Python 3.10+、Node.js 22+。
