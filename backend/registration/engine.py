@@ -799,6 +799,8 @@ def save_config():
 
 load_config()
 
+XAI_CPA_PROXY = str(config.get("cpa_account_proxy", "") or "").strip()
+
 # turnstilePatch 是 Chrome 扩展，Camoufox 基于 Firefox 不兼容，已移除。
 # Turnstile 交互由 signup_flow.getTurnstileToken 统一处理。
 EXTENSION_PATH = ""
@@ -1560,7 +1562,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
             _cpa_log("换 token 失败；SSO 已在 accounts 文件，稍后可重转")
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
-        record = _s2cpa.token_to_cpa_record(token, email=email, sso=sso)
+        record = _s2cpa.token_to_cpa_record(token, email=email, sso=sso, account_proxy=XAI_CPA_PROXY)
         access_token = str(record.get("access_token") or "")
         ap = _s2cpa.decode_jwt_payload(access_token)
         ref = ap.get("referrer")
