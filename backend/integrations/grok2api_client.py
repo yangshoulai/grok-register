@@ -227,13 +227,6 @@ class Grok2APIClient:
             content_type="application/json",
             data=content,
         )
-        if web_sso:
-            multipart.addpart(
-                name="files",
-                filename="grok-web-sso-tokens.txt",
-                content_type="text/plain",
-                data=web_sso.encode("utf-8"),
-            )
         response = None
         try:
             request_kwargs = {
