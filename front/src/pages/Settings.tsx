@@ -62,10 +62,15 @@ const PROVIDERS = [
     description: "适合自建 cloud-mail，需要站点地址、管理员账号和域名。",
   },
 ];
-export type SettingsSection = "registration" | "cpa" | "grok2api" | "mail" | "outlook";
+// cpa / grok2api 保留类型仅为兼容；路由已重定向到 tokenauth
+export type SettingsSection = "registration" | "tokenauth" | "cpa" | "grok2api" | "mail" | "outlook";
 
 const SECTION_META: Record<SettingsSection, { title: string; description: string }> = {
   registration: { title: "注册设置", description: "注册数量、代理、浏览器语言与运行方式。" },
+  tokenauth: {
+    title: "TokenAuth",
+    description: "SSO 授权转换与下游上传目标（CPA / Grok2API / Sub2API）。",
+  },
   cpa: { title: "CPA / Auth", description: "配置 SSO 授权转换、Token 模式与 CPA 入库目标。" },
   grok2api: { title: "Grok2API", description: "维护本地授权目录、远程管理端与自动导入。" },
   mail: { title: "邮箱服务", description: "选择邮箱服务商并维护对应接口与访问凭据。" },
@@ -84,6 +89,10 @@ const OUTLOOK_PICK_MODES = [
   { value: "random", label: "随机选取" },
   { value: "sequential", label: "顺序选取" },
 ];
+const BROWSER_ENGINES = [
+  { value: "camoufox", label: "Camoufox（Firefox，默认）" },
+  { value: "cloakbrowser", label: "CloakBrowser（Chromium）" },
+];
 const CLOUDFLARE_AUTH_MODES = [
   { value: "none", label: "无需鉴权" },
   { value: "bearer", label: "Bearer Token" },
@@ -97,19 +106,21 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
+  disabled,
 }: {
   title: string;
   description?: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4">
+    <div className={`flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4 ${disabled ? "opacity-60" : ""}`}>
       <div className="min-w-0">
         <div className="text-sm font-medium text-foreground">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} label={title} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} label={title} />
     </div>
   );
 }
@@ -350,396 +361,506 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
 
       <div className="space-y-4">
         {section === "registration" ? (
-        <Card>
-          <CardHeader className="flex-row items-start gap-3">
-            <SectionIcon><Settings2 className="h-5 w-5" aria-hidden="true" /></SectionIcon>
-            <div>
-              <CardTitle>基础与注册</CardTitle>
-              <CardDescription>邮箱来源、代理、数量、并发和浏览器运行方式。</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor="email_provider">邮箱服务商</Label>
-              <Select
-                id="email_provider"
-                value={config.email_provider || "cloudflare"}
-                onChange={(event) => setField("email_provider", event.target.value)}
-              >
-                {PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </Select>
-              <p className="text-xs leading-5 text-muted-foreground">{selectedProvider.description}</p>
-            </div>
-            <div className="flex flex-col gap-3 rounded-xl border border-sky-100 bg-sky-50/70 p-3 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between sm:p-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-sky-600 ring-1 ring-sky-100">
-                  <Mail className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900">配置 {selectedProvider.label}</div>
-                  <p className="mt-0.5 text-xs leading-5 text-slate-500">
-                    {selectedProvider.value === "outlookemail" ? "前往邮箱池页面配置接口、账号来源和自动停用。" : "前往邮箱服务页面填写该服务商需要的接口与凭据。"}
-                  </p>
-                </div>
-              </div>
-              <Link
-                to={selectedProvider.value === "outlookemail" ? "/settings/outlook" : `/settings/mail?provider=${encodeURIComponent(selectedProvider.value)}`}
-                className={buttonVariants({ variant: "outline", className: "w-full bg-white sm:w-auto" })}
-              >
-                前往设置
-                <ArrowRight className="h-4 w-4" aria-hidden="true" />
-              </Link>
-            </div>
-            <ConfigField
-              {...fieldState}
-              label="网络代理"
-              field="proxy"
-              type="password"
-              placeholder="http://user:password@host:port"
-              helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
-            />
-            <ConfigField {...fieldState}
-              label="账号间隔（秒）"
-              field="account_interval"
-              placeholder="60-120"
-              helper="支持固定秒数或区间；等待过程可随时停止。"
-            />
-            <ConfigField {...fieldState} label="注册数量" field="register_count" type="number" />
-            <ConfigField {...fieldState} label="并发浏览器数" field="register_workers" type="number" />
-            <ConfigField {...fieldState} label="日志级别" field="log_level" placeholder="info（普通）/ debug（详细）" />
-            <div className="min-w-0 space-y-2">
-              <Label htmlFor="browser_locale">浏览器界面语言</Label>
-              <Select
-                id="browser_locale"
-                value={config.browser_locale || "en-US"}
-                onChange={(event) => setField("browser_locale", event.target.value)}
-              >
-                <option value="en-US">English (en-US，推荐)</option>
-                <option value="zh-CN">简体中文 (zh-CN)</option>
-              </Select>
-              <p className="text-xs leading-5 text-muted-foreground">
-                固定注册页面语言，不跟随代理出口自动切换。
-              </p>
-            </div>
-            <div className="space-y-3 sm:col-span-2">
-              <ToggleRow
-                title="注册后开启 NSFW"
-                description="失败时不阻塞账号保存与 CPA 入库"
-                checked={!!config.enable_nsfw}
-                onCheckedChange={(value) => setField("enable_nsfw", value)}
-              />
-              <ToggleRow
-                title="调试模式"
-                description="强制单账号，结束后保留浏览器"
-                checked={!!config.debug_mode}
-                onCheckedChange={(value) => setField("debug_mode", value)}
-              />
-              <ToggleRow
-                title="无头浏览器"
-                description="后台运行且不显示窗口；Camoufox 会修正常见无头指纹，但无法保证不触发站点风控"
-                checked={!!config.browser_headless}
-                onCheckedChange={(value) => setField("browser_headless", value)}
-              />
-              <ToggleRow
-                title="停止时关闭浏览器"
-                description="收到停止请求后清理当前浏览器实例"
-                checked={!!config.close_browser_on_stop}
-                onCheckedChange={(value) => setField("close_browser_on_stop", value)}
-              />
-            </div>
-          </CardContent>
-        </Card>
-        ) : null}
-
-        {section === "cpa" || section === "grok2api" ? (
-        <div className="space-y-4">
-          {section === "cpa" ? (
           <Card>
             <CardHeader className="flex-row items-start gap-3">
-              <SectionIcon><ShieldCheck className="h-5 w-5" aria-hidden="true" /></SectionIcon>
+              <SectionIcon><Settings2 className="h-5 w-5" aria-hidden="true" /></SectionIcon>
               <div>
-                <CardTitle>授权转换</CardTitle>
-                <CardDescription>注册完成后将 SSO 换为 CPA 与 Grok2API 所需凭据。</CardDescription>
+                <CardTitle>基础与注册</CardTitle>
+                <CardDescription>邮箱来源、代理、数量、并发和浏览器运行方式。</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="email_provider">邮箱服务商</Label>
+                <Select
+                  id="email_provider"
+                  value={config.email_provider || "cloudflare"}
+                  onChange={(event) => setField("email_provider", event.target.value)}
+                >
+                  {PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </Select>
+                <p className="text-xs leading-5 text-muted-foreground">{selectedProvider.description}</p>
+              </div>
+              <div className="flex flex-col gap-3 rounded-xl border border-sky-100 bg-sky-50/70 p-3 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-sky-600 ring-1 ring-sky-100">
+                    <Mail className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-slate-900">配置 {selectedProvider.label}</div>
+                    <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                      {selectedProvider.value === "outlookemail" ? "前往邮箱池页面配置接口、账号来源和自动停用。" : "前往邮箱服务页面填写该服务商需要的接口与凭据。"}
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  to={selectedProvider.value === "outlookemail" ? "/settings/outlook" : `/settings/mail?provider=${encodeURIComponent(selectedProvider.value)}`}
+                  className={buttonVariants({ variant: "outline", className: "w-full bg-white sm:w-auto" })}
+                >
+                  前往设置
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </Link>
+              </div>
+              <ConfigField
+                {...fieldState}
+                label="网络代理"
+                field="proxy"
+                type="password"
+                placeholder="http://user:password@host:port"
+                helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
+              />
+              <ConfigField {...fieldState}
+                label="账号间隔（秒）"
+                field="account_interval"
+                placeholder="60-120"
+                helper="支持固定秒数或区间；等待过程可随时停止。"
+              />
+              <ConfigField {...fieldState} label="注册数量" field="register_count" type="number" />
+              <ConfigField {...fieldState} label="并发浏览器数" field="register_workers" type="number" />
+              <ConfigField {...fieldState} label="日志级别" field="log_level" placeholder="info（普通）/ debug（详细）" />
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="browser_engine">浏览器后端</Label>
+                <Select
+                  id="browser_engine"
+                  value={config.browser_engine || "camoufox"}
+                  onChange={(event) => setField("browser_engine", event.target.value)}
+                >
+                  {BROWSER_ENGINES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </Select>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  Camoufox 始终保留；选择 CloakBrowser 后仅替换启动后端，注册流程保持一致。
+                </p>
+              </div>
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="browser_locale">浏览器界面语言</Label>
+                <Select
+                  id="browser_locale"
+                  value={config.browser_locale || "en-US"}
+                  onChange={(event) => setField("browser_locale", event.target.value)}
+                >
+                  <option value="en-US">English (en-US，推荐)</option>
+                  <option value="zh-CN">简体中文 (zh-CN)</option>
+                </Select>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  固定注册页面语言，不跟随代理出口自动切换。
+                </p>
+              </div>
+              <div className="space-y-3 sm:col-span-2">
+                <ToggleRow
+                  title="注册后开启 NSFW"
+                  description="失败时不阻塞账号保存与 CPA 入库"
+                  checked={!!config.enable_nsfw}
+                  onCheckedChange={(value) => setField("enable_nsfw", value)}
+                />
+                <ToggleRow
+                  title="调试模式"
+                  description="强制单账号，结束后保留浏览器"
+                  checked={!!config.debug_mode}
+                  onCheckedChange={(value) => setField("debug_mode", value)}
+                />
+                <ToggleRow
+                  title="无头浏览器"
+                  description="后台运行且不显示窗口；所选后端会处理常见无头指纹，站点仍可能结合环境与行为判定"
+                  checked={!!config.browser_headless}
+                  onCheckedChange={(value) => setField("browser_headless", value)}
+                />
+                <ToggleRow
+                  title="停止时关闭浏览器"
+                  description="收到停止请求后清理当前浏览器实例"
+                  checked={!!config.close_browser_on_stop}
+                  onCheckedChange={(value) => setField("close_browser_on_stop", value)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {/* TokenAuth：授权转换 + CPA / Grok2API / Sub2API 三目标 */}
+        {section === "tokenauth" || section === "cpa" || section === "grok2api" ? (
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="flex-row items-start gap-3">
+                <SectionIcon><ShieldCheck className="h-5 w-5" aria-hidden="true" /></SectionIcon>
+                <div>
+                  <CardTitle>授权转换</CardTitle>
+                  <CardDescription>注册完成后将 SSO 换为 CPA 与 Grok2API 所需凭据。</CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <ToggleRow
+                    title="注册后自动 SSO → auth"
+                    description="所有邮箱服务商都必须 CPA 状态为 success 才计注册成功，请保持开启"
+                    checked={!!config.cpa_auto_add}
+                    onCheckedChange={(value) => setField("cpa_auto_add", value)}
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <ToggleRow
+                    title="SSO 详细风控检查"
+                    description="获取并解析 SSO 后检查账号页；botFlagSource=0 正常，非 0 标记异常，缺失时自动重试"
+                    checked={!!config.sso_detailed_risk_check}
+                    onCheckedChange={(value) => setField("sso_detailed_risk_check", value)}
+                  />
+                </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="cpa_token_mode">授权转换方式</Label>
+                  <Select
+                    id="cpa_token_mode"
+                    value={config.cpa_token_mode || "device_protocol"}
+                    onChange={(event) => setField("cpa_token_mode", event.target.value)}
+                  >
+                    {TOKEN_MODES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>CPA 目标</CardTitle>
+                  <CardDescription>保存本地 CPA JSON，也可上传到远程 Management API。</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4">
+                  <ToggleRow
+                    title="上传到 CPA"
+                    description="本地目录总会写入；开关只控制是否 POST 到远程 Management API"
+                    checked={config.cpa_upload_enabled !== false}
+                    onCheckedChange={(value) => setField("cpa_upload_enabled", value)}
+                  />
+                  <ConfigField {...fieldState} label="本地授权目录" field="cpa_auth_dir" />
+                  <ConfigField {...fieldState} label="远程 CPA 地址" field="cpa_remote_url" placeholder="http://host:8317" />
+                  <ConfigField {...fieldState} label="远程管理密钥" field="cpa_management_key" type="password" />
+                  <ConfigField {...fieldState} label="账号代理" field="cpa_account_proxy" placeholder="http://proxy.example.com/<ACCOUNT>" helper="账号代理模板；含&lt;ACCOUNT&gt;时使用 email MD5 替换作为 proxy_url。" />
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Grok2API 目标</CardTitle>
+                    <CardDescription>保存 Grok Build、Grok Web、Grok Console 三种 JSON，并通过管理员账号登录远程服务导入。</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-4">
+                    <ConfigField {...fieldState} label="本地授权目录" field="grok2api_auth_dir" />
+                    <ConfigField
+                      {...fieldState}
+                      label="远程 API 地址"
+                      field="grok2api_remote_url"
+                      placeholder="https://api.example.com"
+                      helper="填写站点根地址，不要附加 /api/admin/v1"
+                    />
+                    <ConfigField {...fieldState} label="管理员账号" field="grok2api_remote_username" />
+                    <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
+                    <ToggleRow
+                      title="转换成功后自动导入"
+                      description="生成三种 Grok2API JSON 后立即登录远程管理端，并导入下方勾选的格式；导入结果单独记录"
+                      checked={!!config.grok2api_auto_import}
+                      onCheckedChange={(value) => setField("grok2api_auto_import", value)}
+                    />
+                    <div className="grid gap-3">
+                      <ToggleRow
+                        title="导入 Build"
+                        description="默认导入 grok_build"
+                        checked={config.grok2api_auto_import_build !== false}
+                        onCheckedChange={(value) => setField("grok2api_auto_import_build", value)}
+                        disabled={!config.grok2api_auto_import}
+                      />
+                      <ToggleRow
+                        title="导入 Web"
+                        description="默认不导入 grok_web"
+                        checked={!!config.grok2api_auto_import_web}
+                        onCheckedChange={(value) => setField("grok2api_auto_import_web", value)}
+                        disabled={!config.grok2api_auto_import}
+                      />
+                      <ToggleRow
+                        title="导入 Console"
+                        description="默认不导入 grok_console"
+                        checked={!!config.grok2api_auto_import_console}
+                        onCheckedChange={(value) => setField("grok2api_auto_import_console", value)}
+                        disabled={!config.grok2api_auto_import}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex-row items-start gap-3">
+                    <SectionIcon><Webhook className="h-5 w-5" aria-hidden="true" /></SectionIcon>
+                    <div>
+                      <CardTitle>GrokIQ Webhook</CardTitle>
+                      <CardDescription>
+                        仅在 grok_build 导入成功后发送账号已导入事件；注册机不查询监控处理结果。
+                      </CardDescription>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="grid gap-4">
+                    <ToggleRow
+                      title="启用 GrokIQ 联动"
+                      description="自动导入与账号页手动导入共用同一持久通知队列"
+                      checked={!!config.grokiq_webhook_enabled}
+                      onCheckedChange={(value) => setField("grokiq_webhook_enabled", value)}
+                    />
+                    <ConfigField
+                      {...fieldState}
+                      label="Webhook URL"
+                      field="grokiq_webhook_url"
+                      placeholder="http://grokiq-backend:8090/api/integrations/grok-register/account-imported"
+                      helper="统一 Compose 内使用 grokiq-backend 容器名；独立部署可填写 GrokIQ 内网地址"
+                    />
+                    <ConfigField
+                      {...fieldState}
+                      label="联动 Token"
+                      field="grokiq_webhook_token"
+                      type="password"
+                    />
+                    <ConfigField
+                      {...fieldState}
+                      label="请求超时（秒）"
+                      field="grokiq_webhook_timeout_seconds"
+                      type="number"
+                      helper="注册机只判断 Webhook 是否收到 HTTP 2xx，不读取后续探针或风险结果"
+                    />
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Sub2API 目标</CardTitle>
+                  <CardDescription>
+                    注册拿到 SSO 后直传 Sub2API；服务端自行将 SSO 换成 Build OAuth token 并建号。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <ToggleRow
+                      title="上传到 Sub2API"
+                      description="开启后，每条 SSO 会调用 POST /api/v1/admin/grok/sso-to-oauth；失败不影响注册成功判定"
+                      checked={!!config.sub2api_enabled}
+                      onCheckedChange={(value) => setField("sub2api_enabled", value)}
+                    />
+                  </div>
+                  <ConfigField
+                    {...fieldState}
+                    label="站点根地址"
+                    field="sub2api_remote_url"
+                    placeholder="http://host:8080"
+                    helper="不要附加 /api/v1"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="Admin API Key"
+                    field="sub2api_api_key"
+                    type="password"
+                    helper="Sub2API 后台生成的 Admin API Key，以 x-api-key 头发送"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="分组 ID"
+                    field="sub2api_group_ids"
+                    placeholder="1,2"
+                    helper="分组 ID，多个用逗号分隔；留空不分组"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="代理 ID"
+                    field="sub2api_proxy_id"
+                    type="number"
+                    helper="代理 ID，0 或留空表示不使用代理"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="调度并发"
+                    field="sub2api_concurrency"
+                    type="number"
+                    helper="Sub2API 侧调度并发，默认 1"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="调度优先级"
+                    field="sub2api_priority"
+                    type="number"
+                    helper="调度优先级，默认 0"
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="账号名前缀"
+                    field="sub2api_name_prefix"
+                    helper="可选，账号名前缀；留空由 Sub2API 自动命名"
+                  />
+                  <p className="sm:col-span-2 text-xs leading-5 text-muted-foreground">
+                    上传走 <code className="rounded bg-muted px-1 py-0.5">POST {"{url}"}/api/v1/admin/grok/sso-to-oauth</code>，
+                    Sub2API 服务端会自行将 SSO 换成 Build OAuth token 并建号。
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        ) : null}
+
+        {section === "mail" ? (
+          <Card>
+            <CardHeader className="flex-row items-start gap-3">
+              <SectionIcon><Cloud className="h-5 w-5" aria-hidden="true" /></SectionIcon>
+              <div>
+                <CardTitle>邮箱服务商凭证</CardTitle>
+                <CardDescription>当前选择：{selectedProvider.label}。这里只显示该服务所需字段。</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2 rounded-xl border bg-muted/35 p-3 text-sm">
+                <div className="font-medium">{selectedProvider.label}</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{selectedProvider.description}</div>
+              </div>
+
+              {selectedProvider.value === "duckmail" ? (
+                <>
+                  <ConfigField {...fieldState} label="接口地址" field="duckmail_api_base" helper="DuckMail 默认 https://api.duckmail.sbs；Mail.tm 填 https://api.mail.tm" />
+                  <ConfigField {...fieldState} label="API Key" field="duckmail_api_key" type="password" helper="DuckMail 私有域需要；Mail.tm 公共接口可留空" />
+                </>
+              ) : null}
+
+              {selectedProvider.value === "cloudflare" ? (
+                <>
+                  <CloudflareHelp />
+                  <ConfigField {...fieldState} label="接口地址" field="cloudflare_api_base" placeholder="https://mail.example.com" helper="Worker 根地址，不要带 /api 或结尾斜杠" />
+                  <ConfigField {...fieldState} label="API Key / 管理员密码" field="cloudflare_api_key" type="password" helper="后台 ADMIN_PASSWORDS，作为 x-admin-auth 发送" />
+                  <div className="min-w-0 space-y-2">
+                    <Label htmlFor="cloudflare_auth_mode">鉴权方式</Label>
+                    <Select
+                      id="cloudflare_auth_mode"
+                      value={config.cloudflare_auth_mode || "none"}
+                      onChange={(event) => setField("cloudflare_auth_mode", event.target.value)}
+                    >
+                      {CLOUDFLARE_AUTH_MODES.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <ConfigField {...fieldState} label="全局访问密码" field="cloudflare_custom_auth" type="password" helper="对应 Worker PASSWORDS，发送到 X-Custom-Auth" />
+                  <ConfigField {...fieldState} label="收信域名" field="defaultDomains" placeholder="example.com" helper="必填，需与后台 DOMAINS 一致；多个用逗号分隔，轮流使用" />
+                  <ConfigField {...fieldState} label="创建邮箱接口路径" field="cloudflare_path_accounts" placeholder="/admin/new_address" helper="保持默认 /admin/new_address" />
+                  <ConfigField {...fieldState} label="邮件列表接口路径" field="cloudflare_path_messages" placeholder="/api/mails" helper="默认 /api/mails；新版 Worker 可填 /api/parsed_mails" />
+                  <ConfigField {...fieldState} label="域名接口路径" field="cloudflare_path_domains" placeholder="/api/domains" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
+                  <ConfigField {...fieldState} label="获取 Token 接口路径" field="cloudflare_path_token" placeholder="/api/token" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
+                </>
+              ) : null}
+
+              {selectedProvider.value === "yyds" ? (
+                <>
+                  <ConfigField {...fieldState} label="API Key" field="yyds_api_key" type="password" helper="API Key 与 JWT 至少填写一个" />
+                  <ConfigField {...fieldState} label="JWT" field="yyds_jwt" type="password" helper="填写 JWT 时优先使用 JWT 鉴权" />
+                  <ConfigField {...fieldState} label="固定收信域名" field="yyds_default_domain" helper="留空时自动选择已验证域名" />
+                </>
+              ) : null}
+
+              {selectedProvider.value === "mailnest" ? (
+                <>
+                  <ConfigField {...fieldState} label="API Key" field="mailnest_api_key" type="password" />
+                  <ConfigField {...fieldState} label="项目代码" field="mailnest_project_code" helper="默认 x-ai001" />
+                </>
+              ) : null}
+
+              {selectedProvider.value === "cloudmail" ? (
+                <>
+                  <ConfigField {...fieldState} label="站点地址" field="cloudmail_url" helper="自建 cloud-mail 根地址，不要附加 /api" />
+                  <ConfigField {...fieldState} label="管理员邮箱" field="cloudmail_admin_email" />
+                  <ConfigField {...fieldState} label="管理员密码" field="cloudmail_password" type="password" />
+                  <ConfigField {...fieldState} label="收信域名" field="defaultDomains" helper="多个域名可用逗号或空格分隔" />
+                </>
+              ) : null}
+
+              {selectedProvider.value === "outlookemail" ? (
+                <div className="flex flex-col gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span>OutlookEmail 的账号池、临时邮箱和自动停用配置位于独立页面。</span>
+                  <Link to="/settings/outlook" className={buttonVariants({ variant: "outline", size: "sm", className: "bg-white" })}>
+                    打开邮箱池设置
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </Link>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {section === "outlook" ? (
+          <Card>
+            <CardHeader className="flex-row items-start gap-3">
+              <SectionIcon><Mail className="h-5 w-5" aria-hidden="true" /></SectionIcon>
+              <div>
+                <CardTitle>OutlookEmail 邮箱池</CardTitle>
+                <CardDescription>接口、分组、选取方式与 Web 会话配置。</CardDescription>
               </div>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <ToggleRow
-                  title="注册后自动 SSO → auth"
-                  description="所有邮箱服务商都必须 CPA 状态为 success 才计注册成功，请保持开启"
-                  checked={!!config.cpa_auto_add}
-                  onCheckedChange={(value) => setField("cpa_auto_add", value)}
+                  title="CPA 成功后停用 Outlook 邮箱"
+                  description="仅 accounts 来源生效；CPA 成功、账号已注册、注册风控或 SSO 超时后都会把邮箱更新为 inactive"
+                  checked={!!config.outlookemail_disable_after_cpa_success}
+                  onCheckedChange={(value) =>
+                    setField("outlookemail_disable_after_cpa_success", value)
+                  }
                 />
               </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="cpa_token_mode">授权转换方式</Label>
+              <ConfigField {...fieldState}
+                label="API Base"
+                field="outlookemail_api_base"
+                helper="Compose 可选服务使用 http://outlook-email:5000；外部服务填写其实际地址"
+              />
+              <ConfigField {...fieldState}
+                label="API Key"
+                field="outlookemail_api_key"
+                type="password"
+                helper="accounts 来源读取账号列表和邮件时使用"
+              />
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="outlookemail_source">邮箱来源</Label>
                 <Select
-                  id="cpa_token_mode"
-                  value={config.cpa_token_mode || "device_protocol"}
-                  onChange={(event) => setField("cpa_token_mode", event.target.value)}
+                  id="outlookemail_source"
+                  value={config.outlookemail_source || "accounts"}
+                  onChange={(event) => setField("outlookemail_source", event.target.value)}
                 >
-                  {TOKEN_MODES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  {OUTLOOK_SOURCES.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </Select>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  自动停用接口仅适用于 accounts 来源。
+                </p>
+              </div>
+              <ConfigField {...fieldState} label="分组 ID" field="outlookemail_group_id" />
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="outlookemail_pick_mode">邮箱选取方式</Label>
+                <Select
+                  id="outlookemail_pick_mode"
+                  value={config.outlookemail_pick_mode || "random"}
+                  onChange={(event) => setField("outlookemail_pick_mode", event.target.value)}
+                >
+                  {OUTLOOK_PICK_MODES.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
                 </Select>
               </div>
+              <ConfigField {...fieldState} label="邮件文件夹" field="outlookemail_folder" helper="accounts 来源拉取邮件的文件夹，默认 all" />
+              <ConfigField {...fieldState} label="单次拉取邮件数" field="outlookemail_top" type="number" />
+              <ConfigField {...fieldState} label="临时邮箱标签 ID" field="outlookemail_temp_tag_ids" helper="仅 temp 来源使用，多个 ID 用逗号分隔" />
+              <ConfigField {...fieldState}
+                label="管理网页登录密码"
+                field="outlookemail_web_password"
+                type="password"
+                helper="保存后会自动登录、获取 Session Cookie 与 CSRF Token，无需手工抓取"
+              />
+              <ConfigField {...fieldState}
+                label="Session Cookie（兼容回退）"
+                field="outlookemail_session_cookie"
+                type="password"
+                helper="填写管理密码后可留空；仅用于没有密码时兼容已有配置"
+              />
             </CardContent>
           </Card>
-          ) : null}
-
-          <div className="grid gap-4">
-            {section === "cpa" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>CPA 目标</CardTitle>
-                <CardDescription>保存本地 CPA JSON，也可上传到远程 Management API。</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-4">
-                <ConfigField {...fieldState} label="本地授权目录" field="cpa_auth_dir" />
-                <ConfigField {...fieldState} label="远程 CPA 地址" field="cpa_remote_url" placeholder="http://host:8317" />
-                <ConfigField {...fieldState} label="远程管理密钥" field="cpa_management_key" type="password" />
-                <ConfigField {...fieldState} label="账号代理" field="cpa_account_proxy" placeholder="http://proxy.example.com/<ACCOUNT>" helper="账号代理模板；含&lt;ACCOUNT&gt;时使用 email MD5 替换作为 proxy_url。" />
-              </CardContent>
-            </Card>
-            ) : null}
-
-            {section === "grok2api" ? (
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Grok2API 目标</CardTitle>
-                  <CardDescription>保存 Grok Build、Grok Web、Grok Console 三种 JSON，并通过管理员账号登录远程服务导入。</CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-4">
-                  <ConfigField {...fieldState} label="本地授权目录" field="grok2api_auth_dir" />
-                  <ConfigField
-                    {...fieldState}
-                    label="远程 API 地址"
-                    field="grok2api_remote_url"
-                    placeholder="https://api.example.com"
-                    helper="填写站点根地址，不要附加 /api/admin/v1"
-                  />
-                  <ConfigField {...fieldState} label="管理员账号" field="grok2api_remote_username" />
-                  <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
-                  <ToggleRow
-                    title="转换成功后自动导入"
-                    description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
-                    checked={!!config.grok2api_auto_import}
-                    onCheckedChange={(value) => setField("grok2api_auto_import", value)}
-                  />
-                  <ToggleRow
-                    title="导入 Grok Web SSO"
-                    description="导入 Grok2API JSON 时，同时上传 grok-web-sso-tokens.txt（包含注册获得的 SSO cookie）"
-                    checked={!!config.grok2api_import_web_sso}
-                    onCheckedChange={(value) => setField("grok2api_import_web_sso", value)}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="flex-row items-start gap-3">
-                  <SectionIcon><Webhook className="h-5 w-5" aria-hidden="true" /></SectionIcon>
-                  <div>
-                    <CardTitle>账号监控 Webhook</CardTitle>
-                    <CardDescription>
-                      仅在 grok_build 导入成功后发送账号已导入事件；注册机不查询监控处理结果。
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-                <CardContent className="grid gap-4">
-                  <ToggleRow
-                    title="启用账号监控联动"
-                    description="自动导入与账号页手动导入共用同一持久通知队列"
-                    checked={!!config.monitor_webhook_enabled}
-                    onCheckedChange={(value) => setField("monitor_webhook_enabled", value)}
-                  />
-                  <ConfigField
-                    {...fieldState}
-                    label="Webhook URL"
-                    field="monitor_webhook_url"
-                    placeholder="http://monitor-backend:8090/api/integrations/grok-register/account-imported"
-                    helper="统一 Compose 内使用 monitor-backend 容器名；独立部署可填写监控服务内网地址"
-                  />
-                  <ConfigField
-                    {...fieldState}
-                    label="联动 Token"
-                    field="monitor_webhook_token"
-                    type="password"
-                  />
-                  <ConfigField
-                    {...fieldState}
-                    label="请求超时（秒）"
-                    field="monitor_webhook_timeout_seconds"
-                    type="number"
-                    helper="注册机只判断 Webhook 是否收到 HTTP 2xx，不读取后续探针或风险结果"
-                  />
-                </CardContent>
-              </Card>
-            </div>
-            ) : null}
-          </div>
-        </div>
-        ) : null}
-
-        {section === "mail" ? (
-        <Card>
-          <CardHeader className="flex-row items-start gap-3">
-            <SectionIcon><Cloud className="h-5 w-5" aria-hidden="true" /></SectionIcon>
-            <div>
-              <CardTitle>邮箱服务商凭证</CardTitle>
-              <CardDescription>当前选择：{selectedProvider.label}。这里只显示该服务所需字段。</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2 rounded-xl border bg-muted/35 p-3 text-sm">
-              <div className="font-medium">{selectedProvider.label}</div>
-              <div className="mt-1 text-xs leading-5 text-muted-foreground">{selectedProvider.description}</div>
-            </div>
-
-            {selectedProvider.value === "duckmail" ? (
-              <>
-                <ConfigField {...fieldState} label="接口地址" field="duckmail_api_base" helper="DuckMail 默认 https://api.duckmail.sbs；Mail.tm 填 https://api.mail.tm" />
-                <ConfigField {...fieldState} label="API Key" field="duckmail_api_key" type="password" helper="DuckMail 私有域需要；Mail.tm 公共接口可留空" />
-              </>
-            ) : null}
-
-            {selectedProvider.value === "cloudflare" ? (
-              <>
-                <CloudflareHelp />
-                <ConfigField {...fieldState} label="接口地址" field="cloudflare_api_base" placeholder="https://mail.example.com" helper="Worker 根地址，不要带 /api 或结尾斜杠" />
-                <ConfigField {...fieldState} label="API Key / 管理员密码" field="cloudflare_api_key" type="password" helper="后台 ADMIN_PASSWORDS，作为 x-admin-auth 发送" />
-                <div className="min-w-0 space-y-2">
-                  <Label htmlFor="cloudflare_auth_mode">鉴权方式</Label>
-                  <Select
-                    id="cloudflare_auth_mode"
-                    value={config.cloudflare_auth_mode || "none"}
-                    onChange={(event) => setField("cloudflare_auth_mode", event.target.value)}
-                  >
-                    {CLOUDFLARE_AUTH_MODES.map((item) => (
-                      <option key={item.value} value={item.value}>{item.label}</option>
-                    ))}
-                  </Select>
-                </div>
-                <ConfigField {...fieldState} label="全局访问密码" field="cloudflare_custom_auth" type="password" helper="对应 Worker PASSWORDS，发送到 X-Custom-Auth" />
-                <ConfigField {...fieldState} label="收信域名" field="defaultDomains" placeholder="example.com" helper="必填，需与后台 DOMAINS 一致；多个用逗号分隔，轮流使用" />
-                <ConfigField {...fieldState} label="创建邮箱接口路径" field="cloudflare_path_accounts" placeholder="/admin/new_address" helper="保持默认 /admin/new_address" />
-                <ConfigField {...fieldState} label="邮件列表接口路径" field="cloudflare_path_messages" placeholder="/api/mails" helper="默认 /api/mails；新版 Worker 可填 /api/parsed_mails" />
-                <ConfigField {...fieldState} label="域名接口路径" field="cloudflare_path_domains" placeholder="/api/domains" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
-                <ConfigField {...fieldState} label="获取 Token 接口路径" field="cloudflare_path_token" placeholder="/api/token" helper="仅旧版兼容回退使用，cloudflare_temp_email 用不到" />
-              </>
-            ) : null}
-
-            {selectedProvider.value === "yyds" ? (
-              <>
-                <ConfigField {...fieldState} label="API Key" field="yyds_api_key" type="password" helper="API Key 与 JWT 至少填写一个" />
-                <ConfigField {...fieldState} label="JWT" field="yyds_jwt" type="password" helper="填写 JWT 时优先使用 JWT 鉴权" />
-                <ConfigField {...fieldState} label="固定收信域名" field="yyds_default_domain" helper="留空时自动选择已验证域名" />
-              </>
-            ) : null}
-
-            {selectedProvider.value === "mailnest" ? (
-              <>
-                <ConfigField {...fieldState} label="API Key" field="mailnest_api_key" type="password" />
-                <ConfigField {...fieldState} label="项目代码" field="mailnest_project_code" helper="默认 x-ai001" />
-              </>
-            ) : null}
-
-            {selectedProvider.value === "cloudmail" ? (
-              <>
-                <ConfigField {...fieldState} label="站点地址" field="cloudmail_url" helper="自建 cloud-mail 根地址，不要附加 /api" />
-                <ConfigField {...fieldState} label="管理员邮箱" field="cloudmail_admin_email" />
-                <ConfigField {...fieldState} label="管理员密码" field="cloudmail_password" type="password" />
-                <ConfigField {...fieldState} label="收信域名" field="defaultDomains" helper="多个域名可用逗号或空格分隔" />
-              </>
-            ) : null}
-
-            {selectedProvider.value === "outlookemail" ? (
-              <div className="flex flex-col gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
-                <span>OutlookEmail 的账号池、临时邮箱和自动停用配置位于独立页面。</span>
-                <Link to="/settings/outlook" className={buttonVariants({ variant: "outline", size: "sm", className: "bg-white" })}>
-                  打开邮箱池设置
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </Link>
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-        ) : null}
-
-        {section === "outlook" ? (
-        <Card>
-          <CardHeader className="flex-row items-start gap-3">
-            <SectionIcon><Mail className="h-5 w-5" aria-hidden="true" /></SectionIcon>
-            <div>
-              <CardTitle>OutlookEmail 邮箱池</CardTitle>
-              <CardDescription>接口、分组、选取方式与 Web 会话配置。</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <ToggleRow
-                title="CPA 成功后停用 Outlook 邮箱"
-                description="仅 accounts 来源生效；CPA 状态必须为 success，随后自动更新邮箱为 inactive"
-                checked={!!config.outlookemail_disable_after_cpa_success}
-                onCheckedChange={(value) =>
-                  setField("outlookemail_disable_after_cpa_success", value)
-                }
-              />
-            </div>
-            <ConfigField {...fieldState}
-              label="API Base"
-              field="outlookemail_api_base"
-              helper="Compose 可选服务使用 http://outlook-email:5000；外部服务填写其实际地址"
-            />
-            <ConfigField {...fieldState}
-              label="API Key"
-              field="outlookemail_api_key"
-              type="password"
-              helper="accounts 来源读取账号列表和邮件时使用"
-            />
-            <div className="min-w-0 space-y-2">
-              <Label htmlFor="outlookemail_source">邮箱来源</Label>
-              <Select
-                id="outlookemail_source"
-                value={config.outlookemail_source || "accounts"}
-                onChange={(event) => setField("outlookemail_source", event.target.value)}
-              >
-                {OUTLOOK_SOURCES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </Select>
-              <p className="text-xs leading-5 text-muted-foreground">
-                自动停用接口仅适用于 accounts 来源。
-              </p>
-            </div>
-            <ConfigField {...fieldState} label="分组 ID" field="outlookemail_group_id" />
-            <div className="min-w-0 space-y-2">
-              <Label htmlFor="outlookemail_pick_mode">邮箱选取方式</Label>
-              <Select
-                id="outlookemail_pick_mode"
-                value={config.outlookemail_pick_mode || "random"}
-                onChange={(event) => setField("outlookemail_pick_mode", event.target.value)}
-              >
-                {OUTLOOK_PICK_MODES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </Select>
-            </div>
-            <ConfigField {...fieldState} label="邮件文件夹" field="outlookemail_folder" helper="accounts 来源拉取邮件的文件夹，默认 all" />
-            <ConfigField {...fieldState} label="单次拉取邮件数" field="outlookemail_top" type="number" />
-            <ConfigField {...fieldState} label="临时邮箱标签 ID" field="outlookemail_temp_tag_ids" helper="仅 temp 来源使用，多个 ID 用逗号分隔" />
-            <ConfigField {...fieldState}
-              label="管理网页登录密码"
-              field="outlookemail_web_password"
-              type="password"
-              helper="保存后会自动登录、获取 Session Cookie 与 CSRF Token，无需手工抓取"
-            />
-            <ConfigField {...fieldState}
-              label="Session Cookie（兼容回退）"
-              field="outlookemail_session_cookie"
-              type="password"
-              helper="填写管理密码后可留空；仅用于没有密码时兼容已有配置"
-            />
-          </CardContent>
-        </Card>
         ) : null}
       </div>
 

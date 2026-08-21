@@ -27,9 +27,12 @@ from pydantic import BaseModel, Field
 from .account_exports import build_account_auth_archive, build_sso_archive, read_sso_token
 from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
+from .sso_check_jobs import sso_check_coordinator
+from .update_check import ReleaseUpdateService
 from backend.integrations.proxy import validate_http_proxy_url
-from backend.integrations import account_monitor
+from backend.integrations import grokiq
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
+from backend.shared.version import current_version
 
 APP_DIR = PROJECT_ROOT
 DATA_DIR = DATA_ROOT
@@ -38,7 +41,7 @@ WEB_SESSION_COOKIE = "grok_register_session"
 WEB_SESSION_TTL = 60 * 60 * 24 * 7
 WEB_AUTH_FILE = DATA_DIR / "web_auth.json"
 LEGACY_WEB_AUTH_FILE = APP_DIR / "web_auth.json"
-MAX_BATCH_ACCOUNT_IDS = 1000
+MAX_BATCH_ACCOUNT_IDS = 10000
 
 CONFIG_PUBLIC_KEYS = (
     "email_provider",
@@ -70,6 +73,7 @@ CONFIG_PUBLIC_KEYS = (
     "proxy",
     "enable_nsfw",
     "debug_mode",
+    "browser_engine",
     "browser_headless",
     "browser_locale",
     "close_browser_on_stop",
@@ -78,6 +82,7 @@ CONFIG_PUBLIC_KEYS = (
     "register_workers",
     "user_agent",
     "cpa_auto_add",
+    "sso_detailed_risk_check",
     "cpa_token_mode",
     "cpa_auth_dir",
     "cpa_remote_url",
@@ -88,11 +93,26 @@ CONFIG_PUBLIC_KEYS = (
     "grok2api_remote_username",
     "grok2api_remote_password",
     "grok2api_auto_import",
-    "grok2api_import_web_sso",
     "monitor_webhook_enabled",
     "monitor_webhook_url",
     "monitor_webhook_token",
     "monitor_webhook_timeout_seconds",
+    "grok2api_auto_import_build",
+    "grok2api_auto_import_web",
+    "grok2api_auto_import_console",
+    "cpa_upload_enabled",
+    "sub2api_enabled",
+    "sub2api_remote_url",
+    "sub2api_api_key",
+    "sub2api_group_ids",
+    "sub2api_proxy_id",
+    "sub2api_concurrency",
+    "sub2api_priority",
+    "sub2api_name_prefix",
+    "grokiq_webhook_enabled",
+    "grokiq_webhook_url",
+    "grokiq_webhook_token",
+    "grokiq_webhook_timeout_seconds",
     "mailnest_api_key",
     "mailnest_project_code",
     "yyds_api_key",
@@ -110,7 +130,8 @@ SENSITIVE_HINT_KEYS = {
     "outlookemail_session_cookie",
     "cpa_management_key",
     "grok2api_remote_password",
-    "monitor_webhook_token",
+    "sub2api_api_key",
+    "grokiq_webhook_token",
     "mailnest_api_key",
     "yyds_api_key",
     "yyds_jwt",
@@ -327,9 +348,15 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "browser_headless",
             "close_browser_on_stop",
             "cpa_auto_add",
+            "sso_detailed_risk_check",
             "grok2api_auto_import",
-            "grok2api_import_web_sso",
             "monitor_webhook_enabled",
+            "grok2api_auto_import_build",
+            "grok2api_auto_import_web",
+            "grok2api_auto_import_console",
+            "cpa_upload_enabled",
+            "sub2api_enabled",
+            "grokiq_webhook_enabled",
             "outlookemail_disable_after_cpa_success",
         ):
             value = bool(value)
@@ -337,7 +364,10 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "register_count",
             "register_workers",
             "outlookemail_top",
-            "monitor_webhook_timeout_seconds",
+            "grokiq_webhook_timeout_seconds",
+            "sub2api_proxy_id",
+            "sub2api_concurrency",
+            "sub2api_priority",
         ):
             try:
                 value = int(value)
@@ -349,14 +379,24 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
                 value = max(1, min(value, 8))
             elif key == "outlookemail_top":
                 value = max(1, min(value, 50))
-            elif key == "monitor_webhook_timeout_seconds":
+            elif key == "grokiq_webhook_timeout_seconds":
                 value = max(1, min(value, 60))
+            elif key == "sub2api_proxy_id":
+                value = max(0, value)
+            elif key == "sub2api_concurrency":
+                value = max(1, min(value, 32))
+            elif key == "sub2api_priority":
+                value = max(-100, min(value, 100))
         elif key == "log_level":
             value = str(value or "info").strip().lower() or "info"
         elif key == "browser_locale":
             value = str(value or "en-US").strip()
             if value not in {"en-US", "zh-CN"}:
                 value = "en-US"
+        elif key == "browser_engine":
+            value = str(value or "camoufox").strip().lower()
+            if value not in {"camoufox", "cloakbrowser"}:
+                value = "camoufox"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:
@@ -382,23 +422,41 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "proxy",
             "cpa_remote_url",
             "grok2api_remote_url",
-            "monitor_webhook_url",
+            "sub2api_remote_url",
+            "grokiq_webhook_url",
             "outlookemail_api_base",
             "duckmail_api_base",
             "cloudflare_api_base",
         ):
             value = proxy_update if key == "proxy" else str(value or "").strip()
-            if key == "monitor_webhook_url" and value:
+            if key == "sub2api_remote_url":
+                value = value.rstrip("/")
+                if value and not value.startswith(("http://", "https://")):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Sub2API 站点地址必须以 http:// 或 https:// 开头",
+                    )
+            if key == "grokiq_webhook_url" and value:
                 try:
-                    account_monitor.validate_monitor_config(
+                    grokiq.validate_grokiq_config(
                         {
                             **gr.config,
                             **updates,
-                            "monitor_webhook_url": value,
+                            "grokiq_webhook_url": value,
                         }
                     )
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
+        elif key == "sub2api_group_ids":
+            # 按逗号拆分后只保留纯数字项，防止脏数据进入请求体
+            raw = str(value or "").strip()
+            cleaned: List[str] = []
+            if raw:
+                for part in raw.split(","):
+                    item = part.strip()
+                    if item.isdigit():
+                        cleaned.append(item)
+            value = ",".join(cleaned)
         else:
             if isinstance(value, (dict, list)):
                 continue
@@ -408,18 +466,18 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
         gr.config[key] = value
         changed.append(key)
     try:
-        account_monitor.validate_monitor_config(gr.config)
+        grokiq.validate_grokiq_config(gr.config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     gr.save_config()
-    if any(key.startswith("monitor_webhook_") for key in changed):
-        account_monitor.monitor_notifier.wake()
+    if any(key.startswith("grokiq_webhook_") for key in changed):
+        grokiq.grokiq_notifier.wake()
     return {"changed": changed, "config": _public_config(gr.config)}
 
 
 def _serialize_record(
     record: Dict[str, Any],
-    monitor_delivery: Dict[str, Any] | None = None,
+    grokiq_delivery: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     item = dict(record or {})
     if not item.get("cpa_auth_path"):
@@ -429,11 +487,9 @@ def _serialize_record(
     item["success"] = bool(item.get("success"))
     item["cpa_enabled"] = bool(item.get("cpa_enabled"))
     item["sso_saved"] = bool(item.get("sso_saved"))
-    item["bot_risk"] = bool(item.get("bot_risk"))
-    if item.get("bfs") is None:
-        item["bfs"] = ""
-    else:
-        item["bfs"] = str(item.get("bfs"))
+    bfs_text = "" if item.get("bfs") is None else str(item.get("bfs")).strip()
+    item["bfs"] = bfs_text
+    item["bot_risk"] = bool(item.get("bot_risk")) or bool(bfs_text and bfs_text != "0")
     raw_config = _gr().config
     from backend.integrations.grok2api_client import Grok2APIClient
 
@@ -444,11 +500,7 @@ def _serialize_record(
             item[f"{kind}_auth_available"] = True
         except (FileNotFoundError, OSError, ValueError):
             item[f"{kind}_auth_available"] = False
-    try:
-        _find_account_sso_file(item)
-        item["sso_available"] = True
-    except (FileNotFoundError, OSError, ValueError):
-        item["sso_available"] = False
+    item["sso_available"] = _account_has_sso(item)
     item["screenshot_url"] = (
         f"/api/accounts/{item.get('id')}/failure-screenshot"
         if str(item.get("screenshot_path") or "").strip()
@@ -463,11 +515,13 @@ def _serialize_record(
     else:
         item["extra"] = extra
     extra_data = item["extra"] if isinstance(item["extra"], dict) else {}
+    risk_check = extra_data.get("sso_risk_check")
+    item["sso_risk_check"] = risk_check if isinstance(risk_check, dict) else None
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
     item["exception_type"] = str(extra_data.get("exception_type") or "")
     item["has_exception_traceback"] = bool(item["exception_traceback"])
-    delivery = dict(monitor_delivery or {})
-    item["monitor_delivery"] = {
+    delivery = dict(grokiq_delivery or {})
+    item["grokiq_delivery"] = {
         "event_id": str(delivery.get("event_id") or ""),
         "status": str(delivery.get("status") or "not_queued"),
         "attempts": int(delivery.get("attempts") or 0),
@@ -644,6 +698,14 @@ def _find_account_sso_file(record: Dict[str, Any]) -> Path:
     raise FileNotFoundError("未找到该账号对应的 SSO 文件")
 
 
+def _account_has_sso(record: Dict[str, Any]) -> bool:
+    try:
+        read_sso_token(_find_account_sso_file(record))
+        return True
+    except (FileNotFoundError, OSError, TypeError, ValueError, UnicodeError):
+        return False
+
+
 def _load_account_sso(record: Dict[str, Any]) -> Dict[str, Any]:
     path = _find_account_sso_file(record)
     return {"kind": "sso", "path": str(path), "content": read_sso_token(path)}
@@ -697,14 +759,17 @@ def _relogin_screenshot_file(account_id: int, filename: str) -> tuple[Path, str]
 
 
 def create_app() -> FastAPI:
+    app_version = current_version()
+    update_service = ReleaseUpdateService(app_version)
     app = FastAPI(
         title="Grok Register Web",
         description="Lightweight console for register / list / manage accounts",
-        version="1.0.0",
+        version=app_version,
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    app.state.update_service = update_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -742,20 +807,30 @@ def create_app() -> FastAPI:
             repository = gr.get_registration_repository()
             gr.backfill_access_token_bot_risk()
             gr.backfill_registration_risk_bot_risk()
-            account_monitor.monitor_notifier.start(
+            grokiq.grokiq_notifier.start(
                 repository,
                 lambda: dict(gr.config),
             )
         except Exception as exc:
             print(f"[web] 初始化 SQLite 失败: {exc}", flush=True)
+        update_service.start()
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
-        account_monitor.monitor_notifier.stop()
+        update_service.stop()
+        grokiq.grokiq_notifier.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
-        return {"ok": True, "service": "grok-register-web", "version": "1.0.0"}
+        return {"ok": True, "service": "grok-register-web", "version": app_version}
+
+    @app.get("/api/system/version")
+    def api_system_version() -> Dict[str, Any]:
+        return {"ok": True, "version": update_service.snapshot()}
+
+    @app.post("/api/system/update/check")
+    def api_system_update_check() -> Dict[str, Any]:
+        return {"ok": True, "version": update_service.check()}
 
     @app.get("/api/auth/me")
     def api_auth_me(request: Request) -> Dict[str, Any]:
@@ -886,7 +961,7 @@ def create_app() -> FastAPI:
             batch_id=batch_norm,
             bot_risk=bot_risk_norm,
         )
-        monitor_deliveries = store.account_monitor_deliveries(
+        grokiq_deliveries = store.grokiq_deliveries(
             [row.get("id") for row in rows]
         )
         return {
@@ -899,7 +974,7 @@ def create_app() -> FastAPI:
             "items": [
                 _serialize_record(
                     row,
-                    monitor_deliveries.get(int(row.get("id") or 0)),
+                    grokiq_deliveries.get(int(row.get("id") or 0)),
                 )
                 for row in rows
             ],
@@ -909,10 +984,128 @@ def create_app() -> FastAPI:
     def api_account_relogin_status() -> Dict[str, Any]:
         return {"ok": True, "relogin": relogin_coordinator.status()}
 
+    @app.get("/api/accounts/select-ids")
+    def api_account_select_ids(
+        status: str = Query(""),
+        email_disable_status: str = Query(""),
+        q: str = Query(""),
+        keyword: str = Query(""),
+        batch_id: str = Query(""),
+        bot_risk: str = Query(""),
+    ) -> Dict[str, Any]:
+        store = _gr().get_registration_repository()
+        ids = store.list_result_ids(
+            status=str(status or "").strip().lower(),
+            email_disable_status=str(email_disable_status or "").strip().lower(),
+            keyword=str(q or keyword or "").strip(),
+            batch_id=str(batch_id or "").strip(),
+            bot_risk=str(bot_risk or "").strip().lower(),
+        )
+        return {"ok": True, "ids": ids, "total": len(ids)}
+
+    @app.get("/api/accounts/actionable-ids")
+    def api_account_actionable_ids(
+        action: str = Query(...),
+        q: str = Query(""),
+        bot_risk: str = Query(""),
+        kind: str = Query(""),
+    ) -> Dict[str, Any]:
+        normalized_action = str(action or "").strip().lower()
+        store = _gr().get_registration_repository()
+        if normalized_action == "auth_export":
+            normalized_kind = str(kind or "").strip().lower()
+            if normalized_kind not in {"cpa", "grok2api", "sso"}:
+                raise HTTPException(status_code=400, detail="kind 必须是 cpa、grok2api 或 sso")
+            ids = store.list_result_ids(keyword=str(q or "").strip())
+            gr = _gr()
+            gr.load_config()
+            records_by_id = {
+                int(record.get("id") or 0): record
+                for record in store.get_results_by_ids(ids)
+            }
+            available: List[int] = []
+            for account_id in ids:
+                record = records_by_id.get(account_id)
+                if record is None:
+                    continue
+                try:
+                    if normalized_kind == "sso":
+                        if not _account_has_sso(record):
+                            continue
+                    else:
+                        _find_account_auth_file(record, gr.config, normalized_kind)
+                except (FileNotFoundError, OSError, TypeError, ValueError):
+                    continue
+                available.append(account_id)
+            return {"ok": True, "ids": available, "total": len(available)}
+        try:
+            ids = store.list_actionable_result_ids(
+                normalized_action,
+                keyword=str(q or "").strip(),
+                bot_risk=str(bot_risk or "").strip(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if normalized_action == "sso_check":
+            records_by_id = {
+                int(record.get("id") or 0): record
+                for record in store.get_results_by_ids(ids)
+            }
+            ids = [
+                account_id
+                for account_id in ids
+                if account_id in records_by_id and _account_has_sso(records_by_id[account_id])
+            ]
+        return {"ok": True, "ids": ids, "total": len(ids)}
+
+    @app.get("/api/accounts/sso-check/status")
+    def api_account_sso_check_status() -> Dict[str, Any]:
+        return {"ok": True, "sso_check": sso_check_coordinator.status()}
+
+    @app.post("/api/accounts/sso-check/prepare")
+    def api_accounts_sso_check_prepare(body: AccountIdsBody) -> Dict[str, Any]:
+        ids = _batch_account_ids(body.ids)
+        gr = _gr()
+        records = gr.get_registration_repository().get_results_by_ids(ids)
+        records_by_id = {int(record.get("id") or 0): record for record in records}
+        prepared = [
+            account_id
+            for account_id in ids
+            if account_id in records_by_id and _account_has_sso(records_by_id[account_id])
+        ]
+        return {
+            "ok": True,
+            "ids": prepared,
+            "missing": [account_id for account_id in ids if account_id not in records_by_id],
+            "unavailable": [
+                account_id
+                for account_id in ids
+                if account_id in records_by_id and account_id not in prepared
+            ],
+        }
+
+    @app.post("/api/accounts/sso-check")
+    def api_accounts_sso_check(body: AccountIdsBody) -> Dict[str, Any]:
+        if job_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="注册任务运行中，请等待任务结束后检查")
+        if relogin_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="账号重新登录中，请等待完成后检查")
+        try:
+            status = sso_check_coordinator.start_many(_batch_account_ids(body.ids))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "sso_check": status}
+
     @app.post("/api/accounts/relogin")
     def api_accounts_relogin(body: AccountIdsBody) -> Dict[str, Any]:
         if job_coordinator.status().get("running"):
             raise HTTPException(status_code=409, detail="注册任务运行中，请等待任务结束后重新登录")
+        if sso_check_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="SSO 详细检查中，请等待完成后重新登录")
         try:
             status = relogin_coordinator.start_many(_batch_account_ids(body.ids))
         except LookupError as exc:
@@ -964,13 +1157,15 @@ def create_app() -> FastAPI:
         rows = store.get_results_by_ids([account_id])
         if not rows:
             raise HTTPException(status_code=404, detail="记录不存在")
-        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        delivery = store.grokiq_deliveries([account_id]).get(account_id)
         return {"ok": True, "item": _serialize_record(rows[0], delivery)}
 
     @app.post("/api/accounts/{account_id}/relogin")
     def api_account_relogin(account_id: int) -> Dict[str, Any]:
         if job_coordinator.status().get("running"):
             raise HTTPException(status_code=409, detail="注册任务运行中，请等待任务结束后重新登录")
+        if sso_check_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="SSO 详细检查中，请等待完成后重新登录")
         try:
             status = relogin_coordinator.start(account_id)
         except LookupError as exc:
@@ -1049,20 +1244,20 @@ def create_app() -> FastAPI:
             error="; ".join(import_errors),
         )
         refreshed = store.get_results_by_ids([account_id])[0]
-        monitor_notification: Dict[str, Any] = {"queued": False}
+        grokiq_notification: Dict[str, Any] = {"queued": False}
         if "grok_build" in results:
             try:
-                event = account_monitor.enqueue_imported_account(
+                event = grokiq.enqueue_imported_account(
                     store,
                     refreshed,
                     gr.config,
                 )
-                monitor_notification = {
+                grokiq_notification = {
                     "queued": bool(event),
                     "eventId": str((event or {}).get("event_id") or ""),
                 }
             except Exception as exc:
-                monitor_notification = {"queued": False, "error": str(exc)}
+                grokiq_notification = {"queued": False, "error": str(exc)}
         aggregate = {
             "formats": results,
             "errors": errors,
@@ -1071,11 +1266,11 @@ def create_app() -> FastAPI:
             "synced": sum(int(result.get("synced", 0) or 0) for result in results.values()),
             "syncFailed": sync_failed,
         }
-        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        delivery = store.grokiq_deliveries([account_id]).get(account_id)
         return {
             "ok": True,
             "result": aggregate,
-            "monitorNotification": monitor_notification,
+            "grokiqNotification": grokiq_notification,
             "item": _serialize_record(refreshed, delivery),
         }
 
@@ -1255,6 +1450,8 @@ def create_app() -> FastAPI:
     def api_job_start(body: StartJobBody) -> Dict[str, Any]:
         if relogin_coordinator.status().get("running"):
             raise HTTPException(status_code=409, detail="账号重新登录中，请等待完成后再启动注册")
+        if sso_check_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="SSO 详细检查中，请等待完成后再启动注册")
         gr = _gr()
         gr.load_config()
         if body.config:
@@ -1298,7 +1495,7 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         try:
-            result = gr._bs.kill_all_camoufox_processes(log_callback=job_coordinator._append_log)
+            result = gr._bs.kill_all_browser_processes(log_callback=job_coordinator._append_log)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"终止浏览器失败: {exc}") from exc
         return {"ok": True, **result, "job": job_coordinator.status()}

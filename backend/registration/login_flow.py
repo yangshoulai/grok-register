@@ -117,6 +117,47 @@ return {
     return diagnostics
 
 
+EMAIL_STEP_ATTEMPTS = 4
+EMAIL_STEP_CLICK_WAIT = 6.0
+
+
+def _reveal_email_input(log_callback=None):
+    """点击“使用邮箱登录”并等待邮箱框出现，失败则重试。
+
+    单次点击常因 React 事件尚未挂载、或迟到的 Cookie 横幅拦截而“假成功”，
+    与注册流程 click_email_signup_button 保持同等健壮性：每轮重新关闭横幅并重点。
+    """
+    email_inputs = _native_input_candidates("email")
+    if email_inputs:
+        return email_inputs
+
+    last_error = "登录页未出现邮箱输入框"
+    for attempt in range(1, EMAIL_STEP_ATTEMPTS + 1):
+        # Cookie SDK 可能在登录页加载后才挂载并遮挡按钮，点击前必须再次关闭。
+        try:
+            _dismiss_cookie_consent(log_callback)
+        except Exception:
+            pass
+        clicked = _native_click_action(
+            ("login with email", "使用邮箱登录", "邮箱登录", "continue with email"),
+            deny_keywords=("sign up", "注册"),
+        )
+        if not clicked:
+            last_error = "登录页未找到“使用邮箱登录”按钮"
+            if _native_input_candidates("email"):
+                return _native_input_candidates("email")
+        elif _wait_until(lambda: bool(_native_input_candidates("email")), EMAIL_STEP_CLICK_WAIT):
+            return _native_input_candidates("email")
+        else:
+            last_error = "登录页未出现邮箱输入框"
+
+        if attempt < EMAIL_STEP_ATTEMPTS and log_callback:
+            log_callback(
+                f"[!] {last_error}，重试点击“使用邮箱登录” ({attempt + 1}/{EMAIL_STEP_ATTEMPTS})"
+            )
+    raise RuntimeError(last_error)
+
+
 def _click_submit(keywords) -> bool:
     """优先点击稳定的 sign-in-submit，再回退到可见文案。"""
     # Cookie SDK 可能在表单出现后才挂载，提交前必须再次关闭。
@@ -144,28 +185,43 @@ def _click_submit(keywords) -> bool:
     )
 
 
-def _type_login_value(element, value: str, *, kind: str, log_callback=None) -> bool:
-    """一次性使用 Playwright 键盘输入，兼容 React 受控登录框重渲染。"""
-    if not element:
-        return False
+def _type_login_value(element, value: str, *, kind: str, log_callback=None, attempts: int = 4) -> bool:
+    """使用 Playwright 键盘输入并校验；失败则重抓句柄重试。
+
+    邮箱框刚由 SPA 渲染出来时仍在挂载/重渲染，首次输入常被受控组件冲掉或句柄失效。
+    每轮重新获取当前稳定元素再输入，短暂间隔让页面 settle，直到读回值与目标一致。
+    """
     text = str(value or "")
-    try:
-        locator = element._raw
-        locator.click(force=True, timeout=5000)
-        locator.fill("", force=True)
-        locator.press_sequentially(text, delay=45)
-        current = str(locator.input_value() or "").strip()
-        if current == text.strip():
-            return True
-        # 某些页面重渲染后 locator 句柄短暂失效，重新读取当前稳定元素。
+    target = text.strip()
+    current_element = element
+    for attempt in range(1, max(int(attempts or 1), 1) + 1):
+        if current_element is None:
+            candidates = _native_input_candidates(kind)
+            current_element = candidates[0] if candidates else None
+        if current_element is not None:
+            try:
+                locator = current_element._raw
+                locator.click(force=True, timeout=5000)
+                locator.fill("", force=True)
+                locator.press_sequentially(text, delay=45)
+                if str(locator.input_value() or "").strip() == target:
+                    return True
+            except Exception as exc:
+                if log_callback:
+                    log_callback(f"[Debug] 登录框真实输入异常: {type(exc).__name__}: {exc}")
+        # 页面重渲染后旧句柄可能失效，下一轮重新抓取当前稳定元素。
+        current_element = None
         fresh = _native_input_candidates(kind)
         if fresh:
-            current = str(fresh[0]._raw.input_value() or "").strip()
-        return current == text.strip()
-    except Exception as exc:
-        if log_callback:
-            log_callback(f"[Debug] 登录框真实输入异常: {type(exc).__name__}: {exc}")
-        return False
+            try:
+                if str(fresh[0]._raw.input_value() or "").strip() == target:
+                    return True
+            except Exception:
+                pass
+            current_element = fresh[0]
+        if attempt < attempts:
+            time.sleep(0.6)
+    return False
 
 
 def _signin_page_state(page_obj) -> dict:
@@ -345,17 +401,7 @@ def login_with_password(
     if log_callback:
         log_callback(f"[*] 打开重新登录页: {normalized_email}")
 
-    email_inputs = _native_input_candidates("email")
-    if not email_inputs:
-        clicked = _native_click_action(
-            ("login with email", "使用邮箱登录", "邮箱登录", "continue with email"),
-            deny_keywords=("sign up", "注册"),
-        )
-        if not clicked:
-            raise RuntimeError("登录页未找到“使用邮箱登录”按钮")
-        if not _wait_until(lambda: bool(_native_input_candidates("email")), 12):
-            raise RuntimeError("登录页未出现邮箱输入框")
-    email_inputs = _native_input_candidates("email")
+    email_inputs = _reveal_email_input(log_callback=log_callback)
     if not email_inputs or not _type_login_value(
         email_inputs[0],
         normalized_email,
@@ -363,13 +409,18 @@ def login_with_password(
         log_callback=log_callback,
     ):
         raise RuntimeError("邮箱输入失败")
-    if not _click_submit(("下一步", "next", "continue")):
-        raise RuntimeError("邮箱页未找到下一步按钮")
-
-    if not _wait_until(lambda: bool(_native_input_candidates("password")), 15):
-        detail = _visible_login_error()
-        raise RuntimeError(detail or "登录页未出现密码输入框")
+    # 站点存在两种登录表单:
+    #   单页表单——邮箱与密码同页,填完邮箱后密码框已可见,且提交按钮在密码为空时禁用;
+    #   分步表单——需先点「下一步」推进,密码框才会出现。
+    # 填完邮箱后先探测密码框:已在则直接填密码,缺失才走「下一步」推进,兼容两种表单。
     password_inputs = _native_input_candidates("password")
+    if not password_inputs:
+        if not _click_submit(("下一步", "next", "continue")):
+            raise RuntimeError("邮箱页未找到下一步按钮")
+        if not _wait_until(lambda: bool(_native_input_candidates("password")), 15):
+            detail = _visible_login_error()
+            raise RuntimeError(detail or "登录页未出现密码输入框")
+        password_inputs = _native_input_candidates("password")
     if not password_inputs or not _type_login_value(
         password_inputs[0],
         secret,
